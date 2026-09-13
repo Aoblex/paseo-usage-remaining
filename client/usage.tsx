@@ -181,7 +181,13 @@ function UsageChip({
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: compact ? 4 : 8 }}>
       <BrandMark row={row} theme={theme} size={compact ? 14 : 22} />
-      <Text style={{ color: toneColor(theme, row.tone), fontSize: compact ? 12 : 18, fontWeight: "700" }}>
+      <Text
+        style={{
+          color: row.status === "available" ? toneColor(theme, row.tone) : theme.colors.foregroundMuted,
+          fontSize: compact ? 12 : 18,
+          fontWeight: "700",
+        }}
+      >
         {row.remainingText}
       </Text>
       {showReset && row.resetAt ? (
@@ -324,8 +330,11 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
   // instead would latch: dropping content shrinks the measurement that decided it.
   const narrow = layout.compact;
   const rows = usage.data?.rows ?? [];
-  const session = rows.filter((r) => r.group === "session" && r.status === "available");
-  const weekly = rows.filter((r) => r.group === "weekly" && r.status === "available");
+  // "error" rows are providers that answered recently but not now (e.g. right after
+  // a window reset). Keep them in the strip as a dimmed "—" so a provider never
+  // silently disappears; "unavailable" rows never had data and stay hidden.
+  const session = rows.filter((r) => r.group === "session" && r.status !== "unavailable");
+  const weekly = rows.filter((r) => r.group === "weekly" && r.status !== "unavailable");
   if (session.length === 0 && weekly.length === 0) {
     return (
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted }}>

@@ -23,7 +23,7 @@ and show an error.
 | --- | --- | --- |
 | Claude (session + weekly + Fable weekly) | Claude Code login (macOS Keychain / `~/.claude/.credentials.json` / `CLAUDE_CODE_OAUTH_TOKEN`) | Fable's model-scoped weekly limit is shown as its own entry |
 | Codex | Codex CLI login (`~/.codex/auth.json`) | Windows classified by reported length; plans that report only a weekly window (e.g. Pro) show no Codex 5H entry |
-| Grok | Grok CLI login (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits |
+| Grok | Grok CLI login (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
 | Cursor | Cursor desktop / `cursor-agent` login | Individual plans only — team-billed seats don't expose plan usage |
 
 Everything is read **locally and read-only**. No credentials are written, logged, or sent anywhere except each provider's own usage API.
@@ -53,7 +53,9 @@ paseo plugin update usage-remaining
 - If the Claude rows stay hidden, the keychain token has expired and nothing is refreshing it (Paseo-launched agents use the setup token). Run `claude` once without `CLAUDE_CODE_OAUTH_TOKEN` in the environment; Claude Code refreshes the keychain credential and the rows return within 5 min.
 - The wide inline display and dashboard include a manual refresh button. A manual refresh re-queries Codex, Grok, and Cursor immediately; Claude still keeps its 5-minute minimum interval and any active cooldown. After a manual refresh, the button shows a shared 2-minute countdown before it can be pressed again.
 - If a provider's token is mid-rotation (common while agents run), the plugin serves the **last good value** from a small local cache (`$PASEO_HOME/usage-remaining.cache.json`) instead of flickering to "—". Absolute reset timestamps are cached, so countdown labels keep updating even while the provider API is rate-limited.
-- Provider windows with no data are omitted from the inline display and explained in the dashboard. If none are available, it says `Usage unavailable`.
+- Provider windows that never had data (not signed in) are omitted from the inline display and explained in the dashboard. If none are available, it says `Usage unavailable`.
+- A provider that answered recently but stops answering (for example right after its window resets, before the API reports the new period) stays in the strip as a dimmed `—` chip instead of silently disappearing. The dashboard card says `window reset · waiting for provider`.
+- Every provider request has a 15-second deadline so one slow API cannot stall the whole strip, and each failure is logged as `[usage-remaining] <provider>: …` in the Paseo daemon log (`~/.paseo/daemon.log`) so a missing chip can be diagnosed from the log alone.
 - The original rich display uses the 0.8 web compatibility adapter described below. Native clients use a guarded native adapter to restore the same colored two-row display, with a scrollable sheet on tap.
 - Source changes require `npm run typecheck` followed by `paseo plugin reload usage-remaining`. The 0.8.0 desktop client updates without a daemon restart.
 - A cached row is dropped once its own reset time passes, so a stale pre-reset % is never shown next to `now`.

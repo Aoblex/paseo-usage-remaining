@@ -10,6 +10,15 @@ import type { RemainingRow, UsageSnapshot } from "../shared/usage";
 const execFileAsync = promisify(execFile);
 const home = homedir();
 
+// One slow provider must not stall the whole usage RPC (the pill then shows
+// "Usage…" for every provider). Each request gets its own deadline.
+const FETCH_TIMEOUT_MS = 15_000;
+function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 type Tone = RemainingRow["tone"];
 type Brand = RemainingRow["brand"];
 type Group = RemainingRow["group"];
@@ -30,11 +39,11 @@ function pctText(remainingPct: number | null): string {
   return remainingPct == null ? "—" : `${remainingPct}%`;
 }
 
-function resetLabel(iso: string | null | undefined): string | null {
+function resetLabel(iso: string | null | undefined, now: number = Date.now()): string | null {
   if (!iso) return null;
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  const delta = date.getTime() - Date.now();
+  const delta = date.getTime() - now;
   if (delta <= 0) return "now";
   const totalMinutes = Math.max(1, Math.floor(delta / 60_000));
   const totalHours = Math.floor(totalMinutes / 60);
@@ -204,7 +213,7 @@ async function fetchClaude(): Promise<RemainingRow[]> {
   };
   let body: ClaudeUsageBody | null = null;
   for (const token of tokens) {
-    const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    const res = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
@@ -282,7 +291,7 @@ async function fetchCodex(): Promise<RemainingRow[]> {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
   };
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
-  const res = await fetch("https://chatgpt.com/backend-api/wham/usage", { headers });
+  const res = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
   if (res.status === 401 || res.status === 403) return fallback;
   if (!res.ok) throw new Error(`Codex ${res.status}`);
   const text = await res.text();
@@ -338,43 +347,74 @@ function extractGrokToken(auth: unknown): string | null {
   return null;
 }
 
+export type GrokBillingBody = {
+  config?: {
+    monthlyLimit?: { val?: number };
+    used?: { val?: number };
+    creditUsagePercent?: number;
+    currentPeriod?: { type?: string; start?: string; end?: string };
+    billingPeriodEnd?: string;
+  };
+  usage?: { creditUsage?: number };
+};
+
+// xAI serialises this body from protobuf: fields at their default value are
+// omitted. Right after the weekly reset `creditUsagePercent` is 0 and therefore
+// missing, while `currentPeriod` is still present. Treating that as "no data"
+// made the Grok row vanish for the whole first hours of every period
+// (observed 2026-09-13 after the 18:57 UTC reset). A live period with no usage
+// fields means 0 used.
+export function parseGrokBilling(body: GrokBillingBody | null | undefined): RemainingRow {
+  const config = body?.config;
+  if (!config || typeof config !== "object") return baseRow("grok_week", "grok", "weekly", "Grok");
+  const periodEnd = config.currentPeriod?.end ?? config.billingPeriodEnd ?? null;
+  const usedPct = config.creditUsagePercent;
+  if (typeof usedPct === "number" && Number.isFinite(usedPct)) {
+    return row("grok_week", "grok", "weekly", "Grok", remainingFromUsed(usedPct), periodEnd);
+  }
+  const limit = config.monthlyLimit?.val ?? null;
+  const used = config.used?.val ?? body?.usage?.creditUsage ?? null;
+  if (limit != null && limit > 0 && used != null) {
+    return row(
+      "grok_week",
+      "grok",
+      "weekly",
+      "Grok",
+      remainingFromUsed((used / limit) * 100),
+      periodEnd,
+      `of ${Math.round(limit)} credits`,
+    );
+  }
+  if (periodEnd) {
+    return row("grok_week", "grok", "weekly", "Grok", 100, periodEnd, "no usage yet this period");
+  }
+  return baseRow("grok_week", "grok", "weekly", "Grok");
+}
+
 async function fetchGrok(): Promise<RemainingRow> {
+  const fallback = baseRow("grok_week", "grok", "weekly", "Grok");
   const token =
     process.env.GROK_API_KEY || process.env.GROK_TOKEN || extractGrokToken(await readJson(join(home, ".grok", "auth.json")));
-  if (!token) return baseRow("grok_week", "grok", "weekly", "Grok");
-  const res = await fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+  if (!token) {
+    console.log("[usage-remaining] grok: no token (~/.grok/auth.json missing or unreadable)");
+    return fallback;
+  }
+  const res = await fetchWithTimeout("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
     headers: {
       Authorization: `Bearer ${token}`,
       "X-XAI-Token-Auth": "xai-grok-cli",
       Accept: "application/json",
     },
   });
-  if (!res.ok) return baseRow("grok_week", "grok", "weekly", "Grok");
-  const body = (await res.json()) as {
-    config?: {
-      monthlyLimit?: { val?: number };
-      used?: { val?: number };
-      creditUsagePercent?: number;
-      currentPeriod?: { type?: string; end?: string };
-    };
-    usage?: { creditUsage?: number };
-  };
-  const usedPct = body.config?.creditUsagePercent;
-  if (typeof usedPct === "number") {
-    return row("grok_week", "grok", "weekly", "Grok", remainingFromUsed(usedPct), body.config?.currentPeriod?.end);
+  if (!res.ok) {
+    console.log(`[usage-remaining] grok: ${res.status} from billing endpoint`);
+    return fallback;
   }
-  const limit = body.config?.monthlyLimit?.val ?? null;
-  const used = body.config?.used?.val ?? body.usage?.creditUsage ?? null;
-  if (limit == null || used == null || limit <= 0) return baseRow("grok_week", "grok", "weekly", "Grok");
-  return row(
-    "grok_week",
-    "grok",
-    "weekly",
-    "Grok",
-    remainingFromUsed((used / limit) * 100),
-    body.config?.currentPeriod?.end,
-    `of ${Math.round(limit)} credits`,
-  );
+  const parsed = parseGrokBilling((await res.json()) as GrokBillingBody);
+  if (parsed.status !== "available") {
+    console.log("[usage-remaining] grok: 200 but no usage fields in body (unrecognised shape)");
+  }
+  return parsed;
 }
 
 async function readCursorToken(): Promise<string | null> {
@@ -422,7 +462,7 @@ async function readCursorToken(): Promise<string | null> {
 async function fetchCursor(): Promise<RemainingRow> {
   const token = await readCursorToken();
   if (!token) return baseRow("cursor_month", "cursor", "weekly", "Cursor");
-  const res = await fetch("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
+  const res = await fetchWithTimeout("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -512,27 +552,42 @@ function cachedWindowHasReset(cached: RemainingRow, now: number): boolean {
   return Number.isFinite(resetMs) && resetMs <= now;
 }
 
-function withLastGood(rows: RemainingRow[]): RemainingRow[] {
-  const now = Date.now();
+// A provider that answered recently but is not answering now stays visible as a
+// dimmed "—" chip (status "error") instead of silently dropping out of the strip.
+// Rows that never had data (not signed in) stay "unavailable" and hidden.
+export function withLastGood(
+  rows: RemainingRow[],
+  now: number = Date.now(),
+  cache: Map<string, { row: RemainingRow; at: number }> = lastGood,
+): RemainingRow[] {
   let updated = false;
   const merged = rows.map((r) => {
     if (r.status === "available") {
-      lastGood.set(r.id, { row: r, at: now });
+      cache.set(r.id, { row: r, at: now });
       updated = true;
       return r;
     }
-    const cached = lastGood.get(r.id);
+    const cached = cache.get(r.id);
     if (cached && now - cached.at <= LAST_GOOD_TTL_MS) {
       if (cachedWindowHasReset(cached.row, now)) {
-        return { ...r, detail: "window reset · waiting for provider" };
+        return {
+          ...r,
+          remainingText: "—",
+          remainingPct: null,
+          resetAt: null,
+          resetIso: null,
+          tone: "default" as const,
+          status: "error" as const,
+          detail: "window reset · waiting for provider",
+        };
       }
       // Never serve a frozen countdown: recompute it, or drop it when the cached
       // row predates absolute reset timestamps.
-      return { ...cached.row, resetAt: cached.row.resetIso ? resetLabel(cached.row.resetIso) : null };
+      return { ...cached.row, resetAt: cached.row.resetIso ? resetLabel(cached.row.resetIso, now) : null };
     }
     return r;
   });
-  if (updated) saveCache();
+  if (updated && cache === lastGood) saveCache();
   return merged;
 }
 
@@ -548,6 +603,12 @@ export async function fetchUsage(input: { force?: boolean } = {}): Promise<Usage
     fetchGrok(),
     fetchCursor(),
   ]);
+  for (const [name, result] of [["claude", claude], ["codex", codex], ["grok", grok], ["cursor", cursor]] as const) {
+    if (result.status === "rejected") {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      console.log(`[usage-remaining] ${name}: fetch failed (${reason})`);
+    }
+  }
   const rows: RemainingRow[] = [];
   rows.push(...(claude.status === "fulfilled" ? claude.value : [
     baseRow("claude_session", "claude", "session", "Claude"),
