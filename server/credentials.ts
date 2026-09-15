@@ -366,7 +366,7 @@ export async function fetchWithCredentials(
   request: (credential: CredentialCandidate) => Promise<Response>,
   now: number = Date.now(),
 ): Promise<CredentialFetchResult> {
-  if (credentials.length === 0) return { response: null, credential: null, detail: "no supported credentials found" };
+  if (credentials.length === 0) return { response: null, credential: null, detail: "No supported credentials found" };
   const deadline = Date.now() + FETCH_TIMEOUT_MS;
   const rejected: string[] = [];
   const expired: string[] = [];
@@ -420,9 +420,9 @@ export async function fetchWithCredentials(
   }
 
   const reasons = [
-    rejected.length ? `rejected: ${[...new Set(rejected)].join(", ")}` : "",
-    expired.length ? `expired: ${[...new Set(expired)].join(", ")}` : "",
-    failed.length ? `failed: ${[...new Set(failed)].join(", ")}` : "",
+    rejected.length ? `Rejected: ${[...new Set(rejected)].join(", ")}` : "",
+    expired.length ? `Expired: ${[...new Set(expired)].join(", ")}` : "",
+    failed.length ? `Failed: ${[...new Set(failed)].join(", ")}` : "",
   ].filter(Boolean);
-  return { response: null, credential: null, detail: reasons.join(" · ") || "no usable credentials" };
+  return { response: null, credential: null, detail: reasons.join(" · ") || "No usable credentials" };
 }

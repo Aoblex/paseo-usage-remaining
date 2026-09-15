@@ -266,8 +266,7 @@ function ProviderCard({ provider, theme, compact }: { provider: ProviderUsage; t
         paddingHorizontal: compact ? 12 : 16,
         paddingVertical: compact ? 12 : 14,
         opacity: unavailable ? 0.68 : 1,
-        flexBasis: compact ? "100%" : "48%",
-        flexGrow: 1,
+        width: compact ? "100%" : "48%",
         minWidth: compact ? 0 : 280,
       }}
     >

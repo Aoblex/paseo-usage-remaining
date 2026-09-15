@@ -52,7 +52,7 @@ test('withLastGood: a provider whose cached window already reset stays visible a
   assert.equal(merged.remainingText, '—');
   assert.equal(merged.brand, 'grok');
   assert.equal(merged.resetAt, null);
-  assert.match(merged.detail, /window reset/);
+  assert.match(merged.detail, /window reset/i);
 });
 
 test('withLastGood: a provider with no cache at all stays unavailable (hidden), and a live cache is served with a fresh countdown', () => {

@@ -135,6 +135,6 @@ test('failure details contain source labels but never credential contents', asyn
   const result = await fetchWithCredentials('kimi', [credential('pi', 'do-not-log-this')], async () =>
     new Response(null, { status: 403 }),
   );
-  assert.match(result.detail, /rejected: pi/);
+  assert.match(result.detail, /Rejected: pi/i);
   assert.doesNotMatch(result.detail, /do-not-log-this/);
 });

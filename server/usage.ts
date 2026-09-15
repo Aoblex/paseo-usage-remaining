@@ -79,7 +79,7 @@ function baseRow(id: string, brand: Brand, group: Group, label: string): Remaini
     remainingPct: null,
     resetAt: null,
     resetIso: null,
-    detail: "not signed in or no usage data",
+    detail: "Not signed in or no usage data",
     tone: "default",
     status: "unavailable",
   };
@@ -287,7 +287,7 @@ async function fetchCodex(): Promise<RemainingRow[]> {
   });
   const res = result.response;
   if (!res) return credentialDetail(fallback, result.detail);
-  if (!res.ok) return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
+  if (!res.ok) return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
   const text = await res.text();
   if (text.trim().startsWith("<")) return fallback;
   type CodexWindow = { used_percent?: number; reset_at?: number; limit_window_seconds?: number };
@@ -322,7 +322,7 @@ async function fetchCodex(): Promise<RemainingRow[]> {
   // Some plans (e.g. Pro as of 2026-09) have only a weekly window; do not invent
   // a session row the endpoint did not report.
   if (!rows.some((r) => r.id === "codex_session")) {
-    rows.unshift({ ...baseRow("codex_session", "codex", "session", "Codex"), detail: "no 5-hour window on this plan" });
+    rows.unshift({ ...baseRow("codex_session", "codex", "session", "Codex"), detail: "Session limit is not available on this plan" });
   }
   return credentialDetail(rows, result.detail);
 }
@@ -389,7 +389,7 @@ async function fetchGrok(): Promise<RemainingRow> {
   }
   if (!res.ok) {
     console.log(`[usage-remaining] grok: ${res.status} from billing endpoint via ${result.credential?.sourceLabel}`);
-    return credentialDetail([fallback], `${result.detail} · query failed (${res.status})`)[0];
+    return credentialDetail([fallback], `${result.detail} · Query failed (${res.status})`)[0];
   }
   const parsed = parseGrokBilling((await res.json()) as GrokBillingBody);
   if (parsed.status !== "available") {
@@ -574,7 +574,7 @@ async function fetchKimi(): Promise<RemainingRow[]> {
   if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
     console.log(`[usage-remaining] kimi: ${res.status} from usage endpoint via ${result.credential?.sourceLabel}`);
-    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
+    return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
   }
   const parsed = parseKimiUsage(await res.json());
   return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
@@ -638,7 +638,7 @@ async function fetchGlm(): Promise<RemainingRow[]> {
   if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
     console.log(`[usage-remaining] glm: ${res.status} from quota endpoint via ${result.credential?.sourceLabel}`);
-    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
+    return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
   }
   const parsed = parseGlmLimits(await res.json());
   return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
@@ -674,7 +674,7 @@ async function fetchDeepSeek(): Promise<RemainingRow[]> {
   if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
     console.log(`[usage-remaining] deepseek: ${res.status} from balance endpoint via ${result.credential?.sourceLabel}`);
-    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
+    return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
   }
   const parsed = parseDeepSeekBalance(await res.json());
   return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
@@ -754,7 +754,7 @@ export function withLastGood(
           resetIso: null,
           tone: "default" as const,
           status: "error" as const,
-          detail: "window reset · waiting for provider",
+          detail: "Window reset; waiting for provider",
         };
       }
       // Never serve a frozen countdown: recompute it, or drop it when the cached
@@ -763,7 +763,7 @@ export function withLastGood(
         ...cached.row,
         resetAt: cached.row.resetIso ? resetLabel(cached.row.resetIso, now) : null,
         detail: r.detail
-          ? `${cached.row.detail ? `${cached.row.detail} · ` : ""}latest refresh: ${r.detail}`
+          ? `${cached.row.detail ? `${cached.row.detail} · ` : ""}Latest refresh: ${r.detail}`
           : cached.row.detail,
       };
     }
