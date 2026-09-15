@@ -266,21 +266,23 @@ async function fetchClaude(): Promise<RemainingRow[]> {
   }
   if (!body) return fallback;
 
-  const scopedRows = (body.limits ?? []).flatMap((entry, index) => {
+  // Scoped model buckets are internal detail for most users. Fable is the one
+  // separately purchased allowance we intentionally surface alongside Claude.
+  const scopedRows = (body.limits ?? []).flatMap((entry) => {
     if (entry.kind !== "weekly_scoped") return [];
-    const displayName = entry.scope?.model?.display_name || entry.scope?.model?.id || `Model ${index + 1}`;
+    const displayName = entry.scope?.model?.display_name || entry.scope?.model?.id || "";
     const normalized = displayName.toLowerCase();
     const isFable = normalized.includes("fable") || normalized.includes("omelette");
-    const id = displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || `model_${index}`;
+    if (!isFable) return [];
     return [row(
-      `claude_scope_${id}`,
-      isFable ? "fable" : "claude",
+      "fable_week",
+      "fable",
       "weekly",
-      isFable ? "Fable" : "Claude",
+      "Fable",
       remainingFromUsed(entry.percent),
       entry.resets_at,
       null,
-      `${displayName} · 1-week limit`,
+      "Fable · 1-week limit",
     )];
   });
   const hasScopedFable = scopedRows.some((item) => item.brand === "fable");
@@ -555,13 +557,12 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
   const namedLimits: Record<string, { id: string; group: Group; label: string }> = {
     limit_5h: { id: "kimi_5h", group: "session", label: "5-hour rolling usage" },
     limit_month_total: { id: "kimi_month_total", group: "weekly", label: "Membership monthly usage" },
-    limit_month_code: { id: "kimi_month_code", group: "weekly", label: "Kimi Code monthly usage" },
   };
-  for (const [name, raw] of Object.entries(usages ?? {})) {
+  for (const [name, known] of Object.entries(namedLimits)) {
+    const raw = usages?.[name];
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const value = raw as { used_ratio?: number; reset_time?: string };
     if (typeof value.used_ratio !== "number" || !Number.isFinite(value.used_ratio)) continue;
-    const known = namedLimits[name] ?? { id: `kimi_${name}`, group: "weekly" as Group, label: "Usage limit" };
     const usedPct = value.used_ratio <= 1 ? value.used_ratio * 100 : value.used_ratio;
     result.set(known.id, row(known.id, "kimi", known.group, "Kimi", remainingFromUsed(usedPct), value.reset_time, null, known.label));
   }
@@ -581,16 +582,17 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
       });
     }
   }
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     const duration = Number(candidate.window?.duration);
     const unit = (candidate.window?.unit ?? candidate.window?.timeUnit)?.toLowerCase().replace("time_unit_", "");
     const hours = unit === "minute" ? duration / 60 : unit === "hour" ? duration : unit === "day" ? duration * 24 : unit === "week" ? duration * 168 : null;
     const seconds = hours == null || !Number.isFinite(hours) ? null : hours * 3600;
     const isFiveHour = seconds === 5 * 3600;
     const isWeek = seconds === 7 * 86_400;
-    const id = isFiveHour ? "kimi_5h" : isWeek ? "kimi_week" : `kimi_limit_${index}`;
+    if (!isFiveHour && !isWeek) continue;
+    const id = isFiveHour ? "kimi_5h" : "kimi_week";
     if (result.has(id)) continue;
-    const group: Group = seconds != null && seconds <= 6 * 3600 ? "session" : "weekly";
+    const group: Group = isFiveHour ? "session" : "weekly";
     result.set(id, parseKimiRow(candidate, id, group, "Kimi", durationLimitLabel(seconds, "Usage limit")));
   }
 
@@ -617,7 +619,7 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
         ...baseRow("kimi_balance", "kimi", "balance", "Kimi"),
         metricLabel: "Extra usage balance",
         remainingText: `${currency} ${(balanceCents / 100).toFixed(2)}`,
-        detail: "extra usage balance",
+        detail: null,
         status: "available",
       });
     }
@@ -661,35 +663,42 @@ export function parseGlmLimits(body: unknown): RemainingRow[] {
   const root = body as Record<string, unknown>;
   const payload = (root.data && typeof root.data === "object" ? root.data : root) as Record<string, unknown>;
   if (!Array.isArray(payload.limits)) return [];
-  const rows: RemainingRow[] = [];
+  const selected = new Map<string, { priority: number; value: RemainingRow }>();
   for (const raw of payload.limits as GlmLimit[]) {
     const type = raw.type;
+    const fiveHour = raw.unit === 3 && raw.number === 5;
+    const weekly = raw.unit === 6 && raw.number === 1;
+    const monthlyMcp = type === "TIME_LIMIT" && raw.unit === 5 && raw.number === 1;
+    if (!monthlyMcp && !fiveHour && !weekly) continue;
     if (type !== "TOKENS_LIMIT" && type !== "CREDIT_LIMIT" && type !== "TIME_LIMIT") continue;
+    if (type === "TIME_LIMIT" && !monthlyMcp) continue;
+
+    const slot = monthlyMcp ? "mcp" : fiveHour ? "five_hour" : "weekly";
+    const priority = type === "CREDIT_LIMIT" ? 2 : 1;
+    if ((selected.get(slot)?.priority ?? 0) >= priority) continue;
     const usedPct = typeof raw.percentage === "number" ? raw.percentage : null;
     let resetIso: string | null = null;
     if (raw.nextResetTime != null) {
       const numeric = Number(raw.nextResetTime);
       if (Number.isFinite(numeric)) resetIso = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric).toISOString();
     }
-    const fiveHour = raw.unit === 3 && raw.number === 5;
-    const weekly = raw.unit === 6 && raw.number === 1;
-    const monthlyMcp = type === "TIME_LIMIT" && raw.unit === 5 && raw.number === 1;
-    const group: Group = fiveHour ? "session" : "weekly";
     const kind = type === "TOKENS_LIMIT" ? "token" : type === "CREDIT_LIMIT" ? "credit" : "mcp";
     const noun = kind === "credit" ? "credits" : kind === "token" ? "token usage" : "MCP usage";
-    const metricLabel = fiveHour
-      ? `5-hour ${noun}`
-      : weekly
-        ? `Weekly ${noun}`
-        : monthlyMcp ? "MCP usage · 1 month" : "Usage limit";
+    const metricLabel = fiveHour ? `5-hour ${noun}` : weekly ? `Weekly ${noun}` : "MCP usage · 1 month";
     const detail = typeof raw.remaining === "number" && typeof raw.usage === "number"
-      ? `${raw.remaining} of ${raw.usage} ${kind === "mcp" ? "calls" : "credits"} remaining`
+      ? `${raw.remaining} of ${raw.usage} ${kind === "mcp" ? "calls" : kind === "token" ? "tokens" : "credits"} remaining`
       : typeof raw.currentValue === "number" && typeof raw.usage === "number"
         ? `${raw.currentValue} of ${raw.usage} used`
         : null;
-    rows.push(row(`glm_${kind}_${raw.unit ?? "unknown"}_${raw.number ?? "unknown"}`, "glm", group, "GLM", remainingFromUsed(usedPct), resetIso, detail, metricLabel));
+    selected.set(slot, {
+      priority,
+      value: row(`glm_${slot}`, "glm", fiveHour ? "session" : "weekly", "GLM", remainingFromUsed(usedPct), resetIso, detail, metricLabel),
+    });
   }
-  return rows;
+  return ["five_hour", "weekly", "mcp"].flatMap((slot) => {
+    const selectedRow = selected.get(slot);
+    return selectedRow ? [selectedRow.value] : [];
+  });
 }
 
 async function fetchGlm(): Promise<RemainingRow[]> {
@@ -741,24 +750,15 @@ export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
     const info = raw as {
       currency?: string;
       total_balance?: string | number;
-      granted_balance?: string | number;
-      topped_up_balance?: string | number;
     };
     if (!info.currency) return [];
     const total = decimalMoney(info.total_balance);
     if (!total) return [];
-    const granted = decimalMoney(info.granted_balance);
-    const toppedUp = decimalMoney(info.topped_up_balance);
-    const components = [
-      root.is_available === false ? "Insufficient balance for API calls" : root.is_available === true ? "Available for API calls" : "",
-      granted ? `granted ${info.currency} ${granted}` : "",
-      toppedUp ? `topped up ${info.currency} ${toppedUp}` : "",
-    ].filter(Boolean);
     return [{
       ...baseRow(`deepseek_balance_${info.currency.toLowerCase()}_${index}`, "deepseek", "balance", "DeepSeek"),
       metricLabel: "API balance",
       remainingText: `${info.currency} ${total}`,
-      detail: components.join(" · ") || "API account balance",
+      detail: root.is_available === false ? "Insufficient balance for API calls" : null,
       tone: root.is_available === false ? "danger" as const : "default" as const,
       status: "available" as const,
     }];

@@ -2,18 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDeepSeekBalance, parseGlmLimits, parseKimiUsage } from '../server/usage.ts';
 
-test('Kimi parses short and weekly quota windows plus extra balance', () => {
+test('Kimi keeps known quota windows and ignores ambiguous summary buckets', () => {
   const rows = parseKimiUsage({ data: {
     kind: 'ok',
     summary: { used: 25, limit: 100, reset_at: '2026-09-21T00:00:00Z' },
     limits: [{ name: 'session', window: { duration: 5, unit: 'hour' }, used: 40, limit: 100, reset_at: '2026-09-15T08:00:00Z' }],
     extra_usage: { balance_cents: 1234, currency: 'CNY' },
   } });
-  assert.deepEqual(rows.map((row) => row.id), ['kimi_limit_0', 'kimi_5h', 'kimi_balance']);
+  assert.deepEqual(rows.map((row) => row.id), ['kimi_5h', 'kimi_balance']);
   assert.equal(rows.find((row) => row.id === 'kimi_5h').remainingPct, 60);
   assert.equal(rows.find((row) => row.id === 'kimi_5h').metricLabel, '5-hour limit');
-  assert.equal(rows.find((row) => row.id === 'kimi_limit_0').remainingPct, 75);
-  assert.equal(rows.find((row) => row.id === 'kimi_limit_0').metricLabel, 'Usage limit');
   assert.equal(rows.find((row) => row.id === 'kimi_balance').remainingText, 'CNY 12.34');
 });
 
@@ -26,9 +24,8 @@ test('Kimi preserves named limits from the current subscription payload', () => 
   assert.deepEqual(rows.map((row) => row.metricLabel), [
     '5-hour rolling usage',
     'Membership monthly usage',
-    'Kimi Code monthly usage',
   ]);
-  assert.deepEqual(rows.map((row) => row.remainingPct), [75, 90, 60]);
+  assert.deepEqual(rows.map((row) => row.remainingPct), [75, 90]);
 });
 
 test('Kimi accepts the upstream raw limits/detail and booster-wallet shape', () => {
@@ -46,13 +43,15 @@ test('Kimi accepts the upstream raw limits/detail and booster-wallet shape', () 
 
 test('GLM parses token/credit and MCP limits as remaining percentages', () => {
   const rows = parseGlmLimits({ data: { limits: [
+    { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 40, nextResetTime: 1789459200000 },
     { type: 'CREDIT_LIMIT', unit: 3, number: 5, percentage: 18, nextResetTime: 1789459200000 },
+    { type: 'CREDIT_LIMIT', unit: 99, number: 99, percentage: 90 },
     { type: 'TIME_LIMIT', unit: 5, number: 1, percentage: 25, nextResetTime: 1790812800000 },
   ] } });
-  assert.equal(rows[0].id, 'glm_credit_3_5');
+  assert.equal(rows[0].id, 'glm_five_hour');
   assert.equal(rows[0].metricLabel, '5-hour credits');
   assert.equal(rows[0].remainingPct, 82);
-  assert.equal(rows[1].id, 'glm_mcp_5_1');
+  assert.equal(rows[1].id, 'glm_mcp');
   assert.equal(rows[1].metricLabel, 'MCP usage · 1 month');
   assert.equal(rows[1].remainingPct, 75);
 });
@@ -64,7 +63,12 @@ test('DeepSeek emits one monetary balance row per currency', () => {
   ] });
   assert.deepEqual(rows.map((row) => row.remainingText), ['CNY 19.50', 'USD 2.00']);
   assert.ok(rows.every((row) => row.metricLabel === 'API balance'));
-  assert.match(rows[0].detail, /Available for API calls/);
-  assert.match(rows[0].detail, /granted CNY 1.25/);
+  assert.equal(rows[0].detail, null);
   assert.ok(rows.every((row) => row.group === 'balance' && row.status === 'available'));
+
+  const insufficient = parseDeepSeekBalance({ is_available: false, balance_infos: [
+    { currency: 'CNY', total_balance: '0.00' },
+  ] });
+  assert.equal(insufficient[0].detail, 'Insufficient balance for API calls');
+  assert.equal(insufficient[0].tone, 'danger');
 });

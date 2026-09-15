@@ -4,22 +4,20 @@ A [Paseo](https://paseo.sh) plugin that shows how much AI usage you have **left*
 
 The composer displays every available provider in one compact horizontal flow: provider logo, remaining percentage or monetary balance, then reset time when present. Value formats distinguish rolling limits from balances without separate `5H`, `WK`, or `BAL` labels. Narrow clients wrap the same sequence when needed.
 
-Green, yellow, and red percentages show remaining capacity. Refresh inline, or click
-for the full dashboard. On narrow web screens the refresh button moves out of the
-inline display; provider values retain their reset labels and wrap when needed.
+Green, yellow, and red percentages show remaining capacity. Click the compact flow for the full dashboard; values retain their reset labels and wrap on narrow screens.
 
 On iOS, the same horizontal flow stays above the input and wraps when needed. Tap it to open all providers in a scrollable sheet.
-The dashboard and mobile sheet are provider-first: each provider occupies one full-width card with its logo, credential source, and only the limits that provider actually reports. Window labels preserve provider semantics, such as `5-hour rolling usage`, `1-week limit`, `Membership monthly usage`, `Fable · 1-week limit`, `MCP usage · 1 month`, or `API balance`; unsupported or absent windows are omitted rather than shown as placeholders. Fable stays inside Claude and MCP stays inside GLM. Failed refreshes preserve the last values and explain the error inside the affected provider card.
+The dashboard and mobile sheet are provider-first: each provider occupies one full-width card with its logo, credential source, and a curated set of user-facing primary limits. Internal API buckets, ambiguous fields, and duplicate legacy/new quota representations are intentionally hidden rather than exposed verbatim. Window labels preserve provider semantics, such as `5-hour rolling usage`, `1-week limit`, `Membership monthly usage`, `Fable · 1-week limit`, `MCP usage · 1 month`, or `API balance`; unsupported or absent windows are omitted rather than shown as placeholders. Fable stays inside Claude and MCP stays inside GLM. Failed refreshes preserve the last values and explain the error inside the affected provider card.
 
 ## What it reads
 
 | Provider | Source | Notes |
 | --- | --- | --- |
 | Claude (session + weekly + Fable weekly) | Claude Code login (macOS Keychain / `~/.claude/.credentials.json` / `CLAUDE_CODE_OAUTH_TOKEN`) | Fable's model-scoped weekly limit is shown as its own entry |
-| Codex | Environment, Pi `openai-codex`, OpenCode `openai`/`openai-codex`, or Codex CLI (`~/.codex/auth.json`) | Windows are classified by reported length; plans that report only a weekly window show no Codex 5H entry |
+| Codex | Environment, Pi `openai-codex`, OpenCode `openai`/`openai-codex`, or Codex CLI (`~/.codex/auth.json`) | Shows only the account's primary rate-limit windows; model-specific `additional_rate_limits` are hidden |
 | Grok | Environment, Pi/OpenCode `xai`/`grok`, or Grok CLI (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
 | Cursor | Cursor desktop / `cursor-agent` login | Individual plans only — team-billed seats don't expose plan usage |
-| Kimi | Environment, Pi/OpenCode Kimi providers, or Kimi Code (`~/.kimi-code/credentials/kimi-code.json`) | Shows short/weekly plan windows and extra-usage balance; Pi `kimi-coding` OAuth can be refreshed safely |
+| Kimi | Environment, Pi/OpenCode Kimi providers, or Kimi Code (`~/.kimi-code/credentials/kimi-code.json`) | Shows the 5-hour window, membership monthly total, confirmed weekly window when returned, and extra-usage balance; internal monthly Code sub-buckets are hidden |
 | GLM | Environment, Pi/OpenCode `glm`/`zai` providers, or `~/.config/glm-acp-agent/credentials.json` | Shows returned 5-hour/weekly token or credit windows; legacy monthly MCP appears only when the account API returns it |
 | DeepSeek | Environment, Pi/OpenCode `deepseek`, or `~/.deepseek/auth.json` | Shows API account cash balance, not web membership usage |
 
