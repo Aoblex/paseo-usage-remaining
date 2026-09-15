@@ -197,22 +197,6 @@ function UsageChip({
   );
 }
 
-function GroupHeader({ theme, text, compact }: { theme: Theme; text: string; compact: boolean }) {
-  return (
-    <Text
-      style={{
-        color: theme.colors.foregroundMuted,
-        fontSize: compact ? 9 : 12,
-        fontWeight: "700",
-        letterSpacing: 0.6,
-        width: compact ? 22 : undefined,
-      }}
-    >
-      {text}
-    </Text>
-  );
-}
-
 function RemainingBar({ row, theme }: { row: RemainingRow; theme: Theme }) {
   if (row.remainingPct == null) return null;
   return (
@@ -338,50 +322,33 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
   // "error" rows are providers that answered recently but not now (e.g. right after
   // a window reset). Keep them in the strip as a dimmed "—" so a provider never
   // silently disappears; "unavailable" rows never had data and stay hidden.
-  const session = rows.filter((r) => r.group === "session" && r.status !== "unavailable");
-  const weekly = rows.filter((r) => r.group === "weekly" && r.status !== "unavailable");
-  const balances = rows.filter((r) => r.group === "balance" && r.status !== "unavailable");
-  if (session.length === 0 && weekly.length === 0 && balances.length === 0) {
+  // The value format already distinguishes percentages, reset countdowns, and
+  // monetary balances, so keep every available provider in one horizontal flow.
+  const visible = rows.filter((row) => row.status !== "unavailable");
+  if (visible.length === 0) {
     return (
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted }}>
         {usage.data ? "Usage unavailable" : "Usage…"}
       </Text>
     );
   }
-  const groupRow = (label: string, groupRows: RemainingRow[]) => (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: narrow ? 6 : 8,
-        flexWrap: "wrap",
-        rowGap: 2,
-        flexShrink: 1,
-      }}
-    >
-      <GroupHeader theme={theme} text={label} compact />
-      {groupRows.map((row) => (
-        <UsageChip key={row.id} row={row} theme={theme} compact showReset={!narrow} />
-      ))}
-    </View>
-  );
 
   return (
     <View
       style={{
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
+        gap: narrow ? 8 : 10,
+        rowGap: 3,
+        flexWrap: "wrap",
         flexShrink: 1,
         minWidth: 0,
         paddingVertical: 1,
       }}
     >
-      <View style={{ flexDirection: "column", gap: 2, flexShrink: 1, minWidth: 0 }}>
-        {session.length > 0 ? groupRow("5H", session) : null}
-        {weekly.length > 0 ? groupRow("WK", weekly) : null}
-        {balances.length > 0 ? groupRow("BAL", balances) : null}
-      </View>
+      {visible.map((row) => (
+        <UsageChip key={row.id} row={row} theme={theme} compact showReset />
+      ))}
       {narrow ? null : (
         <RefreshButton
           theme={theme}

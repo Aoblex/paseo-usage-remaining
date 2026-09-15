@@ -2,11 +2,7 @@
 
 A [Paseo](https://paseo.sh) plugin that shows how much AI usage you have **left** — right above the composer.
 
-The original two-line display is preserved on Paseo Desktop, web, and compatible native clients:
-
-- **5H** — provider logos, colored remaining percentages, and session reset times
-- **WK** — Claude, Fable, Codex, Grok, Cursor (monthly), Kimi, and GLM with their reset times
-- **BAL** — Kimi extra-usage and DeepSeek API account balances when available
+The composer displays every available provider in one compact horizontal flow: provider logo, remaining percentage or monetary balance, then reset time when present. Value formats distinguish rolling limits from balances without separate `5H`, `WK`, or `BAL` labels. Narrow clients wrap the same sequence when needed.
 
 Green, yellow, and red percentages show remaining capacity. Refresh inline, or click
 for the full dashboard. On narrow web screens the reset labels and refresh button
