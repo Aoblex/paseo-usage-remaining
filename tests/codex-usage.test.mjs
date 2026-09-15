@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCodexUsage } from '../server/usage.ts';
 
-test('Codex preserves every reported window and additional rate-limit bucket', () => {
+test('Codex shows only primary account windows and ignores additional model buckets', () => {
   const rows = parseCodexUsage({
     rate_limit: {
       primary_window: { used_percent: 20, reset_at: 1_800_000_000, limit_window_seconds: 18_000 },
@@ -18,14 +18,9 @@ test('Codex preserves every reported window and additional rate-limit bucket', (
     }],
   });
 
-  assert.deepEqual(rows.map((row) => row.id), ['codex_0', 'codex_1', 'code_review_0', 'code_review_1']);
-  assert.deepEqual(rows.map((row) => row.metricLabel), [
-    '5-hour limit',
-    '1-week limit',
-    'Code review · 30-minute limit',
-    'Code review · 1-week limit',
-  ]);
-  assert.deepEqual(rows.map((row) => row.remainingPct), [80, 60, 90, 70]);
+  assert.deepEqual(rows.map((row) => row.id), ['codex_0', 'codex_1']);
+  assert.deepEqual(rows.map((row) => row.metricLabel), ['5-hour limit', '1-week limit']);
+  assert.deepEqual(rows.map((row) => row.remainingPct), [80, 60]);
 });
 
 test('Codex does not infer a duration from reset horizon when duration is absent', () => {

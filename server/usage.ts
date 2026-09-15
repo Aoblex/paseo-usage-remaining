@@ -305,49 +305,30 @@ type CodexWindow = { used_percent?: number; reset_at?: number; limit_window_seco
 type CodexRateLimit = { primary_window?: CodexWindow | null; secondary_window?: CodexWindow | null };
 type CodexUsageBody = {
   rate_limit?: CodexRateLimit;
-  additional_rate_limits?: Array<{
-    metered_feature?: string;
-    limit_name?: string;
-    rate_limit?: CodexRateLimit | null;
-  }>;
 };
 
 export function parseCodexUsage(body: unknown): RemainingRow[] {
   if (!body || typeof body !== "object") return [];
   const usage = body as CodexUsageBody;
   const toIso = (epoch: number | undefined) => (epoch != null ? new Date(epoch * 1000).toISOString() : null);
-  const buckets = [
-    { id: "codex", name: null as string | null, rateLimit: usage.rate_limit },
-    ...(usage.additional_rate_limits ?? []).map((additional, index) => ({
-      id: additional.metered_feature || `additional_${index}`,
-      name: additional.limit_name || additional.metered_feature || "Additional limit",
-      rateLimit: additional.rate_limit ?? undefined,
-    })),
-  ];
-  const rows: RemainingRow[] = [];
-  for (const bucket of buckets) {
-    const windows = [bucket.rateLimit?.primary_window, bucket.rateLimit?.secondary_window]
-      .filter((window): window is CodexWindow => window != null);
-    for (const [index, window] of windows.entries()) {
-      const seconds = typeof window.limit_window_seconds === "number" && window.limit_window_seconds > 0
-        ? window.limit_window_seconds
-        : null;
-      const group: Group = seconds != null && seconds <= 6 * 3600 ? "session" : "weekly";
-      const safeBucket = bucket.id.toLowerCase().replace(/[^a-z0-9]+/g, "_");
-      const label = durationLimitLabel(seconds, "Usage limit");
-      rows.push(row(
-        `${safeBucket}_${index}`,
-        "codex",
-        group,
-        "Codex",
-        remainingFromUsed(window.used_percent),
-        toIso(window.reset_at),
-        null,
-        bucket.name ? `${bucket.name} · ${label}` : label,
-      ));
-    }
-  }
-  return rows;
+  const windows = [usage.rate_limit?.primary_window, usage.rate_limit?.secondary_window]
+    .filter((window): window is CodexWindow => window != null);
+  return windows.map((window, index) => {
+    const seconds = typeof window.limit_window_seconds === "number" && window.limit_window_seconds > 0
+      ? window.limit_window_seconds
+      : null;
+    const group: Group = seconds != null && seconds <= 6 * 3600 ? "session" : "weekly";
+    return row(
+      `codex_${index}`,
+      "codex",
+      group,
+      "Codex",
+      remainingFromUsed(window.used_percent),
+      toIso(window.reset_at),
+      null,
+      durationLimitLabel(seconds, "Usage limit"),
+    );
+  });
 }
 
 async function fetchCodex(): Promise<RemainingRow[]> {
