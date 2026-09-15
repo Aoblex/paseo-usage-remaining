@@ -51,6 +51,20 @@ export function metricLabel(row: RemainingRow): string {
   return "Weekly";
 }
 
+export function compactWindowLabel(row: RemainingRow): string | null {
+  if (row.group === "balance") return null;
+  const label = metricLabel(row).toLowerCase();
+  const minutes = label.match(/(\d+)-minute/);
+  if (minutes) return `${minutes[1]}m`;
+  const hours = label.match(/(\d+)-hour/);
+  if (hours) return `${hours[1]}h`;
+  const weeks = label.match(/(\d+)-week/);
+  if (weeks) return `${Number(weeks[1]) * 7}d`;
+  if (label.includes("weekly")) return "7d";
+  if (label.includes("month") || label.includes("billing cycle")) return "30d";
+  return null;
+}
+
 function readableDetail(detail: string): string {
   if (detail === "not signed in or no usage data") return "Not signed in or no usage data";
   if (detail === "no supported credentials found") return "No supported credentials found";

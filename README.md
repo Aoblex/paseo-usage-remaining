@@ -2,7 +2,7 @@
 
 A [Paseo](https://paseo.sh) plugin that shows how much AI usage you have **left** — right above the composer.
 
-The composer displays every available provider in one compact horizontal flow: provider logo, remaining percentage or monetary balance, then reset time when present. Value formats distinguish rolling limits from balances without separate `5H`, `WK`, or `BAL` labels. Narrow clients wrap the same sequence when needed.
+The composer displays one compact capsule per available provider. Each capsule shows the provider logo and name once, then keeps its primary windows together using short periods such as `5h`, `7d`, and `30d`, followed by remaining percentage and reset countdown. Monetary balances omit the period. Narrow clients wrap whole provider capsules when needed.
 
 Green, yellow, and red percentages show remaining capacity. Click the compact flow for the full dashboard; values retain their reset labels and wrap on narrow screens.
 

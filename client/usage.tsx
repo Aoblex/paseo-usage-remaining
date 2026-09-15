@@ -7,7 +7,7 @@ import { expandNativeComposer } from "./native-composer";
 import { expandWebComposer } from "./web-composer";
 import { registerUsagePills } from "./registry";
 import { providerLogos } from "./logos";
-import { groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
+import { compactWindowLabel, groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
 import { listUsage, type RemainingRow } from "../shared/usage";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -53,51 +53,43 @@ function formatAgo(iso: string | undefined, now: number): string | null {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-function BrandMark({ row, theme, size, showLabel = false }: { row: RemainingRow; theme: Theme; size: number; showLabel?: boolean }) {
-  const logoKey = row.brand === "fable" ? "claude" : row.brand;
-  const uri = providerLogos[logoKey];
-  const showName = showLabel || row.brand === "fable" || !uri;
+function CompactProviderChip({ provider, theme }: { provider: ProviderUsage; theme: Theme }) {
+  const uri = providerLogos[provider.brand];
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-      {uri ? <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size * 0.22 }} /> : null}
-      {showName ? (
-        <Text
-          numberOfLines={1}
-          style={{ color: theme.colors.foreground, fontSize: size <= 16 ? 11 : 14, fontWeight: "700", letterSpacing: -0.2 }}
-        >
-          {row.label}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-function UsageChip({
-  row,
-  theme,
-  compact,
-  showReset = true,
-}: {
-  row: RemainingRow;
-  theme: Theme;
-  compact: boolean;
-  showReset?: boolean;
-}) {
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: compact ? 4 : 8 }}>
-      <BrandMark row={row} theme={theme} size={compact ? 14 : 22} />
-      <Text
-        style={{
-          color: row.status === "available" ? toneColor(theme, row.tone) : theme.colors.foregroundMuted,
-          fontSize: compact ? 12 : 18,
-          fontWeight: "700",
-        }}
-      >
-        {row.remainingText}
-      </Text>
-      {showReset && row.resetAt ? (
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: compact ? 10 : 13 }}>{row.resetAt}</Text>
-      ) : null}
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 5,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
+        borderRadius: 999,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface2,
+      }}
+    >
+      {uri ? <Image source={{ uri }} style={{ width: 14, height: 14, borderRadius: 3 }} /> : null}
+      <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>{provider.label}</Text>
+      {provider.metrics.map((row, index) => {
+        const period = compactWindowLabel(row);
+        return (
+          <View key={row.id} style={{ flexDirection: "row", alignItems: "baseline", gap: 3 }}>
+            {index > 0 ? <Text style={{ color: theme.colors.border, fontSize: 11, marginHorizontal: 1 }}>|</Text> : null}
+            {period ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>{period}</Text> : null}
+            <Text
+              style={{
+                color: row.status === "available" ? toneColor(theme, row.tone) : theme.colors.foregroundMuted,
+                fontSize: 12,
+                fontWeight: "700",
+              }}
+            >
+              {row.remainingText}
+            </Text>
+            {row.resetAt ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>· {row.resetAt}</Text> : null}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -244,19 +236,17 @@ export function MobileUsageSheet(props: PluginButtonContentProps) {
 
 export function UsagePill({ theme, layout }: PluginButtonIconProps) {
   const usage = useUsage();
-  // The composer shares its width with other pills; on a phone the row cannot hold
-  // six chips plus their reset labels and the overflow was clipped. `layout.compact`
-  // is the host's own narrow-viewport breakpoint (xs/sm). Measuring our own width
-  // instead would latch: dropping content shrinks the measurement that decided it.
+  // Each provider gets one compact capsule; providers with multiple primary
+  // windows keep those values together and the whole sequence wraps on phones.
   const narrow = layout.compact;
   const rows = usage.data?.rows ?? [];
   // "error" rows are providers that answered recently but not now (e.g. right after
   // a window reset). Keep them in the strip as a dimmed "—" so a provider never
   // silently disappears; "unavailable" rows never had data and stay hidden.
-  // The value format already distinguishes percentages, reset countdowns, and
-  // monetary balances, so keep every available provider in one horizontal flow.
+  // The value format distinguishes percentages, countdowns, and balances.
   const visible = rows.filter((row) => row.status !== "unavailable");
-  if (visible.length === 0) {
+  const providers = groupRowsByProvider(visible).filter((provider) => provider.metrics.length > 0);
+  if (providers.length === 0) {
     return (
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted }}>
         {usage.data ? "Usage unavailable" : "Usage…"}
@@ -277,8 +267,8 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
         paddingVertical: 1,
       }}
     >
-      {visible.map((row) => (
-        <UsageChip key={row.id} row={row} theme={theme} compact showReset />
+      {providers.map((provider) => (
+        <CompactProviderChip key={provider.id} provider={provider} theme={theme} />
       ))}
     </View>
   );
