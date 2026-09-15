@@ -53,7 +53,7 @@ function formatAgo(iso: string | undefined, now: number): string | null {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-function CompactProviderChip({ provider, theme }: { provider: ProviderUsage; theme: Theme }) {
+function CompactProviderChip({ provider, theme, narrow }: { provider: ProviderUsage; theme: Theme; narrow: boolean }) {
   const uri = providerLogos[provider.brand];
   return (
     <View
@@ -70,9 +70,10 @@ function CompactProviderChip({ provider, theme }: { provider: ProviderUsage; the
       }}
     >
       {uri ? <Image source={{ uri }} style={{ width: 14, height: 14, borderRadius: 3 }} /> : null}
-      <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>{provider.label}</Text>
+      {narrow ? null : <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>{provider.label}</Text>}
       {provider.metrics.map((row, index) => {
         const period = compactWindowLabel(row);
+        const reset = row.resetAt && row.resetAt !== period ? row.resetAt : null;
         return (
           <View key={row.id} style={{ flexDirection: "row", alignItems: "baseline", gap: 3 }}>
             {index > 0 ? <Text style={{ color: theme.colors.border, fontSize: 11, marginHorizontal: 1 }}>|</Text> : null}
@@ -86,7 +87,7 @@ function CompactProviderChip({ provider, theme }: { provider: ProviderUsage; the
             >
               {row.remainingText}
             </Text>
-            {row.resetAt ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>· {row.resetAt}</Text> : null}
+            {reset ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>· {reset}</Text> : null}
           </View>
         );
       })}
@@ -268,7 +269,7 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
       }}
     >
       {providers.map((provider) => (
-        <CompactProviderChip key={provider.id} provider={provider} theme={theme} />
+        <CompactProviderChip key={provider.id} provider={provider} theme={theme} narrow={narrow} />
       ))}
     </View>
   );
