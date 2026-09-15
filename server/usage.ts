@@ -50,6 +50,16 @@ function pctText(remainingPct: number | null): string {
   return remainingPct == null ? "—" : `${remainingPct}%`;
 }
 
+function durationLimitLabel(seconds: number | null | undefined, fallback = "Plan limit"): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return fallback;
+  const hours = seconds / 3600;
+  if (hours < 24 && Number.isInteger(hours)) return `${hours}-hour limit`;
+  const days = seconds / 86_400;
+  if (Number.isInteger(days) && days % 7 === 0) return `${days / 7}-week limit`;
+  if (Number.isInteger(days)) return `${days}-day limit`;
+  return fallback;
+}
+
 function resetLabel(iso: string | null | undefined, now: number = Date.now()): string | null {
   if (!iso) return null;
   const date = new Date(iso);
@@ -93,12 +103,14 @@ function row(
   remainingPct: number | null,
   resetIso: string | null | undefined,
   detail: string | null = null,
+  metricLabel: string | null = null,
 ): RemainingRow {
   return {
     id,
     brand,
     group,
     label,
+    metricLabel,
     remainingText: pctText(remainingPct),
     remainingPct,
     resetAt: resetLabel(resetIso),
@@ -261,9 +273,9 @@ async function fetchClaude(): Promise<RemainingRow[]> {
   const fableReset = fableLimit?.resets_at ?? body.seven_day_omelette?.resets_at ?? body.seven_day?.resets_at;
 
   const rows = [
-    row("claude_session", "claude", "session", "Claude", remainingFromUsed(body.five_hour?.utilization), body.five_hour?.resets_at),
-    row("claude_week", "claude", "weekly", "Claude", remainingFromUsed(body.seven_day?.utilization), body.seven_day?.resets_at),
-    row("fable_week", "fable", "weekly", "Fable", remainingFromUsed(fableUsed), fableReset),
+    row("claude_session", "claude", "session", "Claude", remainingFromUsed(body.five_hour?.utilization), body.five_hour?.resets_at, null, "5-hour limit"),
+    row("claude_week", "claude", "weekly", "Claude", remainingFromUsed(body.seven_day?.utilization), body.seven_day?.resets_at, null, "1-week limit"),
+    row("fable_week", "fable", "weekly", "Fable", remainingFromUsed(fableUsed), fableReset, null, "Fable · 1-week limit"),
   ];
   lastClaudeRows = rows;
   lastClaudeAt = Date.now();
@@ -316,13 +328,22 @@ async function fetchCodex(): Promise<RemainingRow[]> {
     const group: Group = isSession ? "session" : "weekly";
     const id = isSession ? "codex_session" : "codex_week";
     if (rows.some((r) => r.id === id)) continue;
-    rows.push(row(id, "codex", group, "Codex", remainingFromUsed(w.used_percent), iso));
+    rows.push(row(
+      id,
+      "codex",
+      group,
+      "Codex",
+      remainingFromUsed(w.used_percent),
+      iso,
+      null,
+      durationLimitLabel(w.limit_window_seconds, isSession ? "Session limit" : "Weekly limit"),
+    ));
   }
   if (rows.length === 0) return credentialDetail(fallback, result.detail);
   // Some plans (e.g. Pro as of 2026-09) have only a weekly window; do not invent
   // a session row the endpoint did not report.
   if (!rows.some((r) => r.id === "codex_session")) {
-    rows.unshift({ ...baseRow("codex_session", "codex", "session", "Codex"), detail: "Session limit is not available on this plan" });
+    rows.unshift(baseRow("codex_session", "codex", "session", "Codex"));
   }
   return credentialDetail(rows, result.detail);
 }
@@ -348,9 +369,15 @@ export function parseGrokBilling(body: GrokBillingBody | null | undefined): Rema
   const config = body?.config;
   if (!config || typeof config !== "object") return baseRow("grok_week", "grok", "weekly", "Grok");
   const periodEnd = config.currentPeriod?.end ?? config.billingPeriodEnd ?? null;
+  const periodStartMs = config.currentPeriod?.start ? new Date(config.currentPeriod.start).getTime() : Number.NaN;
+  const periodEndMs = periodEnd ? new Date(periodEnd).getTime() : Number.NaN;
+  const periodSeconds = Number.isFinite(periodStartMs) && Number.isFinite(periodEndMs)
+    ? (periodEndMs - periodStartMs) / 1000
+    : null;
+  const metricLabel = durationLimitLabel(periodSeconds);
   const usedPct = config.creditUsagePercent;
   if (typeof usedPct === "number" && Number.isFinite(usedPct)) {
-    return row("grok_week", "grok", "weekly", "Grok", remainingFromUsed(usedPct), periodEnd);
+    return row("grok_week", "grok", "weekly", "Grok", remainingFromUsed(usedPct), periodEnd, null, metricLabel);
   }
   const limit = config.monthlyLimit?.val ?? null;
   const used = config.used?.val ?? body?.usage?.creditUsage ?? null;
@@ -363,10 +390,11 @@ export function parseGrokBilling(body: GrokBillingBody | null | undefined): Rema
       remainingFromUsed((used / limit) * 100),
       periodEnd,
       `of ${Math.round(limit)} credits`,
+      metricLabel,
     );
   }
   if (periodEnd) {
-    return row("grok_week", "grok", "weekly", "Grok", 100, periodEnd, "no usage yet this period");
+    return row("grok_week", "grok", "weekly", "Grok", 100, periodEnd, "no usage yet this period", metricLabel);
   }
   return baseRow("grok_week", "grok", "weekly", "Grok");
 }
@@ -482,23 +510,23 @@ async function fetchCursor(): Promise<RemainingRow> {
     body.planUsage.totalSpend != null && body.planUsage.limit != null
       ? `used $${Math.round(body.planUsage.totalSpend / 100)} · included $${Math.round(body.planUsage.limit / 100)} · monthly`
       : "monthly";
-  return row("cursor_month", "cursor", "weekly", "Cursor", remainingFromUsed(usedPct), resetIso, detail);
+  return row("cursor_month", "cursor", "weekly", "Cursor", remainingFromUsed(usedPct), resetIso, detail, "Monthly limit");
 }
 
 type KimiUsageRow = {
   name?: string;
-  window?: { duration?: number; unit?: string };
+  window?: { duration?: number; unit?: string; timeUnit?: string };
   used?: number;
   limit?: number;
   reset_at?: string;
   resetTime?: string;
 };
 
-function parseKimiRow(raw: KimiUsageRow, id: string, group: Group, label: string): RemainingRow {
+function parseKimiRow(raw: KimiUsageRow, id: string, group: Group, label: string, metricLabel: string): RemainingRow {
   const used = Number(raw.used);
   const limit = Number(raw.limit);
   const usedPct = Number.isFinite(used) && Number.isFinite(limit) && limit > 0 ? (used / limit) * 100 : null;
-  return row(id, "kimi", group, label, remainingFromUsed(usedPct), raw.reset_at ?? raw.resetTime);
+  return row(id, "kimi", group, label, remainingFromUsed(usedPct), raw.reset_at ?? raw.resetTime, null, metricLabel);
 }
 
 export function parseKimiUsage(body: unknown): RemainingRow[] {
@@ -524,12 +552,18 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
   const result = new Map<Group, RemainingRow>();
   for (const candidate of candidates) {
     const duration = Number(candidate.window?.duration);
-    const unit = candidate.window?.unit?.toLowerCase().replace("time_unit_", "");
+    const unit = (candidate.window?.unit ?? candidate.window?.timeUnit)?.toLowerCase().replace("time_unit_", "");
     const hours = unit === "minute" ? duration / 60 : unit === "hour" ? duration : unit === "day" ? duration * 24 : unit === "week" ? duration * 168 : null;
     const group: Group = hours != null && hours <= 6 ? "session" : "weekly";
     if (!result.has(group)) {
       const suffix = group === "session" ? "session" : "week";
-      result.set(group, parseKimiRow(candidate, `kimi_${suffix}`, group, "Kimi"));
+      result.set(group, parseKimiRow(
+        candidate,
+        `kimi_${suffix}`,
+        group,
+        "Kimi",
+        durationLimitLabel(hours == null ? null : hours * 3600, group === "session" ? "Session limit" : "Plan limit"),
+      ));
     }
   }
   const wallet = payload.extra_usage && typeof payload.extra_usage === "object"
@@ -552,6 +586,7 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
       : typeof rawMonthlyLimit?.currency === "string" && rawMonthlyLimit.currency ? rawMonthlyLimit.currency : "CNY";
     result.set("balance", {
       ...baseRow("kimi_balance", "kimi", "balance", "Kimi"),
+      metricLabel: "Extra usage balance",
       remainingText: `${currency} ${(balanceCents / 100).toFixed(2)}`,
       detail: "extra usage balance",
       status: "available",
@@ -605,9 +640,14 @@ export function parseGlmLimits(body: unknown): RemainingRow[] {
     }
     const session = raw.unit === 3 && (raw.number ?? 5) <= 6;
     const group: Group = session ? "session" : "weekly";
-    const suffix = type === "TIME_LIMIT" ? "mcp" : session ? "session" : "week";
+    const kind = type === "TOKENS_LIMIT" ? "token" : type === "CREDIT_LIMIT" ? "credit" : "mcp";
     const label = type === "TIME_LIMIT" ? "GLM MCP" : "GLM";
-    rows.push(row(`glm_${suffix}`, "glm", group, label, remainingFromUsed(usedPct), resetIso));
+    const metricLabel = type === "TIME_LIMIT"
+      ? "MCP limit"
+      : session
+        ? `${raw.number ?? 5}-hour ${kind} limit`
+        : `${kind[0].toUpperCase()}${kind.slice(1)} limit`;
+    rows.push(row(`glm_${kind}_${group}`, "glm", group, label, remainingFromUsed(usedPct), resetIso, null, metricLabel));
   }
   return rows;
 }
@@ -656,6 +696,7 @@ export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
     const currency = info.currency || "CNY";
     return [{
       ...baseRow(`deepseek_balance_${currency.toLowerCase()}_${index}`, "deepseek", "balance", "DeepSeek"),
+      metricLabel: "API balance",
       remainingText: `${currency} ${amount.toFixed(2)}`,
       detail: "API account balance",
       status: "available" as const,

@@ -8,6 +8,7 @@ export const RemainingRowSchema = z.object({
   brand: z.enum(["claude", "fable", "codex", "grok", "cursor", "kimi", "glm", "deepseek"]),
   group: z.enum(["session", "weekly", "balance"]),
   label: z.string(),
+  metricLabel: z.string().nullable().optional(),
   remainingText: z.string(),
   remainingPct: z.number().nullable(),
   resetAt: z.string().nullable(),

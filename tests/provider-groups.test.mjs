@@ -37,7 +37,7 @@ test('provider card extracts one credential source and keeps useful status detai
   assert.equal(provider.credentialSource, 'Pi');
   assert.equal(provider.status, 'available');
   assert.deepEqual(provider.metrics.map((metric) => metric.id), ['codex_week']);
-  assert.deepEqual(provider.details, ['Session limit is not available on this plan']);
+  assert.deepEqual(provider.details, []);
 });
 
 test('unconfigured providers remain as one explanatory card without empty metric rows', () => {

@@ -9,7 +9,7 @@ for the full dashboard. On narrow web screens the refresh button moves out of th
 inline display; provider values retain their reset labels and wrap when needed.
 
 On iOS, the same horizontal flow stays above the input and wraps when needed. Tap it to open all providers in a scrollable sheet.
-The dashboard and mobile sheet are provider-first: each provider gets one card with its logo, credential source, and provider-specific metrics such as Session, Weekly, Fable weekly, MCP, or API balance. Fable stays inside Claude and MCP stays inside GLM. Desktop uses a responsive two-column grid; narrow screens use one column. Failed refreshes preserve the last values and explain the error inside the affected provider card.
+The dashboard and mobile sheet are provider-first: each provider occupies one full-width card with its logo, credential source, and only the limits that provider actually reports. Window labels preserve provider semantics, such as `5-hour limit`, `1-week limit`, `Monthly limit`, `Fable · 1-week limit`, `MCP limit`, or `API balance`; unsupported or absent windows are omitted rather than shown as placeholders. Fable stays inside Claude and MCP stays inside GLM. Failed refreshes preserve the last values and explain the error inside the affected provider card.
 
 ## What it reads
 

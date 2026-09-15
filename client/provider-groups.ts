@@ -43,6 +43,7 @@ function providerId(row: RemainingRow): string {
 }
 
 export function metricLabel(row: RemainingRow): string {
+  if (row.metricLabel) return row.metricLabel;
   if (METRIC_LABELS[row.id]) return METRIC_LABELS[row.id];
   if (row.id.startsWith("deepseek_balance_")) return "API balance";
   if (row.group === "session") return "Session";
@@ -73,7 +74,9 @@ function detailParts(detail: string | null): { source: string | null; messages: 
     part = part.replace(/credential:\s*[^·]+/i, "").trim();
     if (!part) continue;
     if (part === "extra usage balance" || part === "API account balance" || part === "monthly") continue;
-    messages.push(readableDetail(part));
+    const readable = readableDetail(part);
+    if (readable === "Session limit is not available on this plan") continue;
+    messages.push(readable);
   }
   return { source, messages };
 }
