@@ -340,11 +340,8 @@ async function fetchCodex(): Promise<RemainingRow[]> {
     ));
   }
   if (rows.length === 0) return credentialDetail(fallback, result.detail);
-  // Some plans (e.g. Pro as of 2026-09) have only a weekly window; do not invent
-  // a session row the endpoint did not report.
-  if (!rows.some((r) => r.id === "codex_session")) {
-    rows.unshift(baseRow("codex_session", "codex", "session", "Codex"));
-  }
+  // Some plans expose only a weekly window. Do not create a placeholder for a
+  // limit the endpoint did not report.
   return credentialDetail(rows, result.detail);
 }
 
