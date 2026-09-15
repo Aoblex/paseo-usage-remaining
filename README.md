@@ -5,10 +5,10 @@ A [Paseo](https://paseo.sh) plugin that shows how much AI usage you have **left*
 The composer displays every available provider in one compact horizontal flow: provider logo, remaining percentage or monetary balance, then reset time when present. Value formats distinguish rolling limits from balances without separate `5H`, `WK`, or `BAL` labels. Narrow clients wrap the same sequence when needed.
 
 Green, yellow, and red percentages show remaining capacity. Refresh inline, or click
-for the full dashboard. On narrow web screens the reset labels and refresh button
-move out of the inline display; all providers still fit, and the dashboard has details.
+for the full dashboard. On narrow web screens the refresh button moves out of the
+inline display; provider values retain their reset labels and wrap when needed.
 
-On iOS, the colored two-row display stays above the input. Tap it to open all providers in a scrollable sheet.
+On iOS, the same horizontal flow stays above the input and wraps when needed. Tap it to open all providers in a scrollable sheet.
 Cards show each provider’s logo and name, colored remaining capacity, and one reset
 label. Narrow screens stack the header above a 44px refresh button. The full
 dashboard uses the same responsive cards. Failed refreshes preserve the last values
@@ -19,14 +19,16 @@ and show an error.
 | Provider | Source | Notes |
 | --- | --- | --- |
 | Claude (session + weekly + Fable weekly) | Claude Code login (macOS Keychain / `~/.claude/.credentials.json` / `CLAUDE_CODE_OAUTH_TOKEN`) | Fable's model-scoped weekly limit is shown as its own entry |
-| Codex | Pi `openai-codex` OAuth or Codex CLI login (`~/.codex/auth.json`) | Pi auth is preferred; windows are classified by reported length, and plans that report only a weekly window show no Codex 5H entry |
-| Grok | Grok CLI login (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
+| Codex | Environment, Pi `openai-codex`, OpenCode `openai`/`openai-codex`, or Codex CLI (`~/.codex/auth.json`) | Windows are classified by reported length; plans that report only a weekly window show no Codex 5H entry |
+| Grok | Environment, Pi/OpenCode `xai`/`grok`, or Grok CLI (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
 | Cursor | Cursor desktop / `cursor-agent` login | Individual plans only — team-billed seats don't expose plan usage |
-| Kimi | Pi `kimi-coding` auth or Kimi Code login (`~/.kimi-code/credentials/kimi-code.json`) | Shows short/weekly plan windows and extra-usage balance; Pi auth is preferred because it keeps OAuth fresh |
-| GLM | Pi `glm`/`zai` auth, `Z_AI_API_KEY`, or `~/.config/glm-acp-agent/credentials.json` | Shows Coding Plan token/credit windows and monthly MCP quota |
-| DeepSeek | Pi `deepseek` auth, `DEEPSEEK_API_KEY`, or `~/.deepseek/auth.json` | Shows API account cash balance, not web membership usage |
+| Kimi | Environment, Pi/OpenCode Kimi providers, or Kimi Code (`~/.kimi-code/credentials/kimi-code.json`) | Shows short/weekly plan windows and extra-usage balance; Pi `kimi-coding` OAuth can be refreshed safely |
+| GLM | Environment, Pi/OpenCode `glm`/`zai` providers, or `~/.config/glm-acp-agent/credentials.json` | Shows Coding Plan token/credit windows and monthly MCP quota |
+| DeepSeek | Environment, Pi/OpenCode `deepseek`, or `~/.deepseek/auth.json` | Shows API account cash balance, not web membership usage |
 
-Credentials are read locally and are never logged. They are sent only to each provider's own OAuth, usage, or balance API. Kimi's 15-minute Pi OAuth token is refreshed under Pi's credential-file lock; only the `kimi-coding` entry in `~/.pi/agent/auth.json` is updated, preserving the other providers.
+Pi credentials come from `~/.pi/agent/auth.json`. OpenCode credentials come from `$OPENCODE_AUTH_CONTENT` or `$XDG_DATA_HOME/opencode/auth.json` (normally `~/.local/share/opencode/auth.json`). The plugin discovers candidates without copying them into its own storage, deduplicates identical secrets, and tries the next source after an authentication rejection. The default priority is `env,pi,opencode,official-cli`; override it with a comma-separated `USAGE_REMAINING_CREDENTIAL_PRIORITY`, for example `pi,opencode,official-cli,env`.
+
+Credentials are read locally and are never logged. They are sent only to each provider's own OAuth, usage, or balance API. Kimi's 15-minute Pi OAuth token is refreshed under Pi's credential-file lock with an atomic replacement; only the `kimi-coding` entry in `~/.pi/agent/auth.json` is updated. Other stores are read-only, and the quota cache never contains credentials.
 
 ## Install
 
@@ -56,7 +58,7 @@ paseo plugin update usage-remaining
 - Provider windows that never had data (not signed in) are omitted from the inline display and explained in the dashboard. If none are available, it says `Usage unavailable`.
 - A provider that answered recently but stops answering (for example right after its window resets, before the API reports the new period) stays in the strip as a dimmed `—` chip instead of silently disappearing. The dashboard card says `window reset · waiting for provider`.
 - Every provider request has a 15-second deadline so one slow API cannot stall the whole strip, and each failure is logged as `[usage-remaining] <provider>: …` in the Paseo daemon log (`~/.paseo/daemon.log`) so a missing chip can be diagnosed from the log alone.
-- The original rich display uses the 0.8 web compatibility adapter described below. Native clients use a guarded native adapter to restore the same colored two-row display, with a scrollable sheet on tap.
+- The rich display uses the 0.8 web compatibility adapter described below. Native clients use a guarded native adapter to restore the same colored horizontal flow, with a scrollable sheet on tap.
 - Source changes require `npm run typecheck` followed by `paseo plugin reload usage-remaining`. The 0.8.0 desktop client updates without a daemon restart.
 - A cached row is dropped once its own reset time passes, so a stale pre-reset % is never shown next to `now`.
 - On native clients the plugin hides Paseo's own git diff badge (`+123 -45`) from the
@@ -72,7 +74,7 @@ The plugin registers through the supported `button` API, then mounts the origina
 React Native usage component in its own web icon slot. The original button's
 opaque surface, border, and rounded frame remain behind the colored data.
 
-Paseo's track normally floats absolutely over the transcript. A two-row widget
+Paseo's track normally floats absolutely over the transcript. A wrapping usage widget
 must not remain in that overlay: `client/web-composer.ts` makes the containing
 track a normal, nonshrinking flex row with an opaque background. The transcript
 viewport gives up exactly the track's height; wrapping provider chips or adjacent

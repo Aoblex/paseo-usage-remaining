@@ -21,11 +21,11 @@ function fixture(list) {
   };
   return { client, created, state, update: value => update(value) };
 }
-test('current provider label handles weekly-only plans, monthly plans and unavailable usage', () => {
-  assert.equal(usageLabel('codex/gpt-6-astra', snapshot), 'Codex · WK 92%');
+test('current provider label uses value shape without quota group abbreviations', () => {
+  assert.equal(usageLabel('codex/gpt-6-astra', snapshot), 'Codex · 92%');
   assert.equal(usageLabel('claude', snapshot), 'Usage unavailable');
   assert.equal(usageLabel('codex'), 'Usage…');
-  assert.equal(usageLabel('cursor', { rows: [{ ...snapshot.rows[0], brand: 'cursor', label: 'Cursor' }] }), 'Cursor · MO 92%');
+  assert.equal(usageLabel('cursor', { rows: [{ ...snapshot.rows[0], brand: 'cursor', label: 'Cursor', resetAt: '4d' }] }), 'Cursor · 92% 4d');
 });
 test('all pages register; status updates preserve identity; moving/removing agents cleans up', async () => {
   const f = fixture(async ({ page }) => page.cursor ? { entries: [{ agent: agent('b') }], pageInfo: {} } : { entries: [{ agent: agent('a') }], pageInfo: { hasMore: true, nextCursor: 'next' } });
@@ -35,7 +35,7 @@ test('all pages register; status updates preserve identity; moving/removing agen
     assert.equal(f.created.length, 2);
     f.update({ kind: 'upsert', agent: agent('a') });
     assert.equal(f.created.length, 2);
-    assert.equal(f.created[0].patches.at(-1).label, 'Codex · WK 92%');
+    assert.equal(f.created[0].patches.at(-1).label, 'Codex · 92%');
     f.created[0].input.button.behavior.onPress();
     assert.equal(f.state.opened, 'main');
     f.update({ kind: 'upsert', agent: agent('a', 'other') });

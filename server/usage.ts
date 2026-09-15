@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { RemainingRow, UsageSnapshot } from "../shared/usage";
+import { discoverCredentials, fetchWithCredentials, readJson } from "./credentials.ts";
 
 const execFileAsync = promisify(execFile);
 const home = homedir();
@@ -13,10 +14,20 @@ const home = homedir();
 // One slow provider must not stall the whole usage RPC (the pill then shows
 // "Usage…" for every provider). Each request gets its own deadline.
 const FETCH_TIMEOUT_MS = 15_000;
-function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type Tone = RemainingRow["tone"];
@@ -98,93 +109,11 @@ function row(
   };
 }
 
-async function readJson(path: string): Promise<unknown | null> {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(await readFile(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-const PI_AUTH_PATH = join(home, ".pi", "agent", "auth.json");
-
-async function readPiCredential(providerNames: string[], fieldNames: string[]): Promise<string | null> {
-  const auth = await readJson(PI_AUTH_PATH);
-  if (!auth || typeof auth !== "object") return null;
-  const providers = auth as Record<string, unknown>;
-  for (const providerName of providerNames) {
-    const entry = providers[providerName];
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    for (const fieldName of fieldNames) {
-      const value = record[fieldName];
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
-  }
-  return null;
-}
-
-// Pi stores Kimi's 15-minute OAuth token in auth.json. Use the same lock directory
-// as Pi's proper-lockfile-backed credential store, double-check under the lock,
-// and persist a rotated refresh token before releasing it.
-async function readFreshPiKimiToken(force = false): Promise<string | null> {
-  const lockPath = `${PI_AUTH_PATH}.lock`;
-  let locked = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      await mkdir(lockPath);
-      locked = true;
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-  if (!locked) return null;
-  try {
-    const auth = await readJson(PI_AUTH_PATH);
-    if (!auth || typeof auth !== "object") return null;
-    const providers = auth as Record<string, unknown>;
-    const current = providers["kimi-coding"] as {
-      type?: string;
-      access?: string;
-      refresh?: string;
-      expires?: number;
-    } | undefined;
-    if (current?.type !== "oauth" || !current.access || !current.refresh) return null;
-    if (!force && typeof current.expires === "number" && current.expires > Date.now() + 60_000) return current.access;
-
-    const res = await fetchWithTimeout("https://auth.kimi.com/api/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({
-        client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
-        grant_type: "refresh_token",
-        refresh_token: current.refresh,
-      }).toString(),
-    });
-    const body = await res.json().catch(() => null) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    } | null;
-    if (!res.ok || !body?.access_token || typeof body.expires_in !== "number") {
-      console.log(`[usage-remaining] kimi: OAuth refresh failed (${res.status})`);
-      return null;
-    }
-    const updated = {
-      ...current,
-      access: body.access_token,
-      refresh: body.refresh_token || current.refresh,
-      expires: Date.now() + body.expires_in * 1000,
-    };
-    providers["kimi-coding"] = updated;
-    await writeFile(PI_AUTH_PATH, `${JSON.stringify(providers, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    return updated.access;
-  } finally {
-    await rmdir(lockPath).catch(() => undefined);
-  }
+function credentialDetail(rows: RemainingRow[], detail: string): RemainingRow[] {
+  return rows.map((item) => ({
+    ...item,
+    detail: item.detail ? `${item.detail} · ${detail}` : detail,
+  }));
 }
 
 // Anthropic's usage endpoint answers 429 (retry-after ~1 h) for tokens it will not
@@ -343,48 +272,22 @@ async function fetchClaude(): Promise<RemainingRow[]> {
 }
 
 async function fetchCodex(): Promise<RemainingRow[]> {
-  const paths = [
-    process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "auth.json") : "",
-    join(home, ".codex", "auth.json"),
-    join(home, ".config", "codex", "auth.json"),
-  ].filter(Boolean);
-  let accessToken: string | undefined;
-  let accountId: string | undefined;
-  const piAuth = await readJson(PI_AUTH_PATH);
-  const piCodex = (piAuth as Record<string, unknown> | null)?.["openai-codex"] as {
-    type?: string;
-    access?: string;
-    accountId?: string;
-  } | undefined;
-  if (piCodex?.type === "oauth" && piCodex.access) {
-    accessToken = piCodex.access;
-    accountId = piCodex.accountId;
-  }
-  for (const path of paths) {
-    if (accessToken) break;
-    const auth = await readJson(path);
-    const tokens = (auth as { tokens?: { access_token?: string; account_id?: string } } | null)?.tokens;
-    if (tokens?.access_token) {
-      accessToken = tokens.access_token;
-      accountId = tokens.account_id;
-      break;
-    }
-  }
   const fallback = [
     baseRow("codex_session", "codex", "session", "Codex"),
     baseRow("codex_week", "codex", "weekly", "Codex"),
   ];
-  if (!accessToken) return fallback;
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
-    Accept: "application/json",
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-  };
-  if (accountId) headers["ChatGPT-Account-Id"] = accountId;
-  const res = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-  if (res.status === 401 || res.status === 403) return fallback;
-  if (!res.ok) throw new Error(`Codex ${res.status}`);
+  const result = await fetchWithCredentials("codex", await discoverCredentials("codex"), (credential) => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${credential.secret}`,
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    };
+    if (credential.accountId) headers["ChatGPT-Account-Id"] = credential.accountId;
+    return fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
+  });
+  const res = result.response;
+  if (!res) return credentialDetail(fallback, result.detail);
+  if (!res.ok) return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
   const text = await res.text();
   if (text.trim().startsWith("<")) return fallback;
   type CodexWindow = { used_percent?: number; reset_at?: number; limit_window_seconds?: number };
@@ -415,27 +318,13 @@ async function fetchCodex(): Promise<RemainingRow[]> {
     if (rows.some((r) => r.id === id)) continue;
     rows.push(row(id, "codex", group, "Codex", remainingFromUsed(w.used_percent), iso));
   }
-  if (rows.length === 0) return fallback;
+  if (rows.length === 0) return credentialDetail(fallback, result.detail);
   // Some plans (e.g. Pro as of 2026-09) have only a weekly window; do not invent
   // a session row the endpoint did not report.
   if (!rows.some((r) => r.id === "codex_session")) {
     rows.unshift({ ...baseRow("codex_session", "codex", "session", "Codex"), detail: "no 5-hour window on this plan" });
   }
-  return rows;
-}
-
-function extractGrokToken(auth: unknown): string | null {
-  if (auth == null || typeof auth !== "object" || Array.isArray(auth)) return null;
-  const record = auth as Record<string, unknown>;
-  if (typeof record.access_token === "string" && record.access_token) return record.access_token;
-  const entries = Object.entries(record);
-  const preferred = entries.filter(([key]) => key.startsWith("https://auth.x.ai::"));
-  for (const [, value] of preferred.length > 0 ? preferred : entries) {
-    if (value == null || typeof value !== "object" || Array.isArray(value)) continue;
-    const key = (value as Record<string, unknown>).key;
-    if (typeof key === "string" && key) return key;
-  }
-  return null;
+  return credentialDetail(rows, result.detail);
 }
 
 export type GrokBillingBody = {
@@ -484,28 +373,29 @@ export function parseGrokBilling(body: GrokBillingBody | null | undefined): Rema
 
 async function fetchGrok(): Promise<RemainingRow> {
   const fallback = baseRow("grok_week", "grok", "weekly", "Grok");
-  const token =
-    process.env.GROK_API_KEY || process.env.GROK_TOKEN || extractGrokToken(await readJson(join(home, ".grok", "auth.json")));
-  if (!token) {
-    console.log("[usage-remaining] grok: no token (~/.grok/auth.json missing or unreadable)");
-    return fallback;
+  const result = await fetchWithCredentials("grok", await discoverCredentials("grok"), (credential) =>
+    fetchWithTimeout("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
+      headers: {
+        Authorization: `Bearer ${credential.secret}`,
+        "X-XAI-Token-Auth": "xai-grok-cli",
+        Accept: "application/json",
+      },
+    }),
+  );
+  const res = result.response;
+  if (!res) {
+    console.log(`[usage-remaining] grok: ${result.detail}`);
+    return credentialDetail([fallback], result.detail)[0];
   }
-  const res = await fetchWithTimeout("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "X-XAI-Token-Auth": "xai-grok-cli",
-      Accept: "application/json",
-    },
-  });
   if (!res.ok) {
-    console.log(`[usage-remaining] grok: ${res.status} from billing endpoint`);
-    return fallback;
+    console.log(`[usage-remaining] grok: ${res.status} from billing endpoint via ${result.credential?.sourceLabel}`);
+    return credentialDetail([fallback], `${result.detail} · query failed (${res.status})`)[0];
   }
   const parsed = parseGrokBilling((await res.json()) as GrokBillingBody);
   if (parsed.status !== "available") {
     console.log("[usage-remaining] grok: 200 but no usage fields in body (unrecognised shape)");
   }
-  return parsed;
+  return credentialDetail([parsed], result.detail)[0];
 }
 
 async function readCursorToken(): Promise<string | null> {
@@ -675,32 +565,19 @@ async function fetchKimi(): Promise<RemainingRow[]> {
     baseRow("kimi_session", "kimi", "session", "Kimi"),
     baseRow("kimi_week", "kimi", "weekly", "Kimi"),
   ];
-  const credential = await readJson(join(home, ".kimi-code", "credentials", "kimi-code.json"));
-  const envToken = process.env.KIMI_CODE_ACCESS_TOKEN;
-  const piToken = envToken ? null : await readFreshPiKimiToken();
-  let accessToken = envToken
-    || piToken
-    || await readPiCredential(["moonshotai-cn", "moonshotai"], ["access", "key"])
-    || (credential as { access_token?: string } | null)?.access_token;
-  if (!accessToken) return fallback;
-  let res = await fetchWithTimeout("https://api.kimi.com/coding/v1/usages", {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-  });
-  if (res.status === 401 && piToken) {
-    const refreshed = await readFreshPiKimiToken(true);
-    if (refreshed) {
-      accessToken = refreshed;
-      res = await fetchWithTimeout("https://api.kimi.com/coding/v1/usages", {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-      });
-    }
-  }
+  const result = await fetchWithCredentials("kimi", await discoverCredentials("kimi"), (credential) =>
+    fetchWithTimeout("https://api.kimi.com/coding/v1/usages", {
+      headers: { Authorization: `Bearer ${credential.secret}`, Accept: "application/json" },
+    }),
+  );
+  const res = result.response;
+  if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
-    console.log(`[usage-remaining] kimi: ${res.status} from usage endpoint`);
-    return fallback;
+    console.log(`[usage-remaining] kimi: ${res.status} from usage endpoint via ${result.credential?.sourceLabel}`);
+    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
   }
   const parsed = parseKimiUsage(await res.json());
-  return parsed.length > 0 ? parsed : fallback;
+  return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
 }
 
 type GlmLimit = {
@@ -735,39 +612,36 @@ export function parseGlmLimits(body: unknown): RemainingRow[] {
   return rows;
 }
 
-async function readGlmKey(): Promise<string | null> {
-  if (process.env.Z_AI_API_KEY) return process.env.Z_AI_API_KEY;
-  if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_BASE_URL?.includes("bigmodel")) return process.env.ANTHROPIC_AUTH_TOKEN;
-  const piKey = await readPiCredential(["glm", "zai-coding-cn", "zai", "zhipu"], ["key", "access"]);
-  if (piKey) return piKey;
-  const auth = await readJson(join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "glm-acp-agent", "credentials.json"));
-  const key = (auth as { z_ai_api_key?: string } | null)?.z_ai_api_key;
-  return typeof key === "string" && key ? key : null;
-}
-
 async function fetchGlm(): Promise<RemainingRow[]> {
   const fallback = [
     baseRow("glm_session", "glm", "session", "GLM"),
     baseRow("glm_mcp", "glm", "weekly", "GLM MCP"),
   ];
-  const key = await readGlmKey();
-  if (!key) return fallback;
-  const china = process.env.ANTHROPIC_BASE_URL?.includes("bigmodel");
-  const origin = china ? "https://open.bigmodel.cn" : "https://api.z.ai";
-  let res = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
-    headers: { Authorization: key, Accept: "application/json" },
-  });
-  if (res.status === 401 || res.status === 403) {
-    res = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+  const result = await fetchWithCredentials("glm", await discoverCredentials("glm"), async (credential) => {
+    const china = credential.providerId === "zai-coding-cn"
+      || credential.providerId === "zai-coding-plan-cn"
+      || credential.providerId === "glm"
+      || credential.providerId === "zhipu"
+      || (!credential.providerId && process.env.ANTHROPIC_BASE_URL?.includes("bigmodel"));
+    const origin = china ? "https://open.bigmodel.cn" : "https://api.z.ai";
+    let response = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
+      headers: { Authorization: credential.secret, Accept: "application/json" },
     });
-  }
+    if (response.status === 401 || response.status === 403) {
+      response = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
+        headers: { Authorization: `Bearer ${credential.secret}`, Accept: "application/json" },
+      });
+    }
+    return response;
+  });
+  const res = result.response;
+  if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
-    console.log(`[usage-remaining] glm: ${res.status} from quota endpoint`);
-    return fallback;
+    console.log(`[usage-remaining] glm: ${res.status} from quota endpoint via ${result.credential?.sourceLabel}`);
+    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
   }
   const parsed = parseGlmLimits(await res.json());
-  return parsed.length > 0 ? parsed : fallback;
+  return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
 }
 
 export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
@@ -791,20 +665,19 @@ export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
 
 async function fetchDeepSeek(): Promise<RemainingRow[]> {
   const fallback = [baseRow("deepseek_balance", "deepseek", "balance", "DeepSeek")];
-  const auth = await readJson(join(home, ".deepseek", "auth.json"));
-  const key = process.env.DEEPSEEK_API_KEY
-    || await readPiCredential(["deepseek"], ["key", "access"])
-    || (auth as { api_key?: string } | null)?.api_key;
-  if (!key) return fallback;
-  const res = await fetchWithTimeout("https://api.deepseek.com/user/balance", {
-    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-  });
+  const result = await fetchWithCredentials("deepseek", await discoverCredentials("deepseek"), (credential) =>
+    fetchWithTimeout("https://api.deepseek.com/user/balance", {
+      headers: { Authorization: `Bearer ${credential.secret}`, Accept: "application/json" },
+    }),
+  );
+  const res = result.response;
+  if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) {
-    console.log(`[usage-remaining] deepseek: ${res.status} from balance endpoint`);
-    return fallback;
+    console.log(`[usage-remaining] deepseek: ${res.status} from balance endpoint via ${result.credential?.sourceLabel}`);
+    return credentialDetail(fallback, `${result.detail} · query failed (${res.status})`);
   }
   const parsed = parseDeepSeekBalance(await res.json());
-  return parsed.length > 0 ? parsed : fallback;
+  return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
 }
 
 // Claude Code rotates its OAuth token while agents run; the old token 401s for a
@@ -886,7 +759,13 @@ export function withLastGood(
       }
       // Never serve a frozen countdown: recompute it, or drop it when the cached
       // row predates absolute reset timestamps.
-      return { ...cached.row, resetAt: cached.row.resetIso ? resetLabel(cached.row.resetIso, now) : null };
+      return {
+        ...cached.row,
+        resetAt: cached.row.resetIso ? resetLabel(cached.row.resetIso, now) : null,
+        detail: r.detail
+          ? `${cached.row.detail ? `${cached.row.detail} · ` : ""}latest refresh: ${r.detail}`
+          : cached.row.detail,
+      };
     }
     return r;
   });
@@ -945,7 +824,7 @@ export async function fetchUsage(input: { force?: boolean } = {}): Promise<Usage
   const balance = merged.filter((r) => r.group === "balance");
   return {
     fetchedAt: new Date().toISOString(),
-    pillText: `5h ${pillText(session)} | wk ${pillText(weekly)} | bal ${pillText(balance)}`,
+    pillText: pillText(merged.filter((item) => item.status !== "unavailable")),
     rows: [...session, ...weekly, ...balance],
   };
 }

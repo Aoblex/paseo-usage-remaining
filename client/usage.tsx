@@ -366,8 +366,8 @@ export function contributeClient(client: PluginClientContext) {
 }
 
 // 0.8 removed custom composer bodies. On the web renderer, keep the original
-// two-row component inside our own icon mount and expand only its enclosing
-// button. Native uses a guarded host adapter to reserve the same two-row layout.
+// rich usage flow inside our own icon mount and expand only its enclosing
+// button. Native uses a guarded host adapter to reserve the same wrapping layout.
 function RichUsageIcon(props: PluginButtonIconProps) {
   const ref = useRef<View>(null);
   const { width: windowWidth } = useWindowDimensions();
