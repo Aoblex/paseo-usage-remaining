@@ -52,6 +52,8 @@ function pctText(remainingPct: number | null): string {
 
 function durationLimitLabel(seconds: number | null | undefined, fallback = "Plan limit"): string {
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return fallback;
+  const minutes = seconds / 60;
+  if (minutes < 60 && Number.isInteger(minutes)) return `${minutes}-minute limit`;
   const hours = seconds / 3600;
   if (hours < 24 && Number.isInteger(hours)) return `${hours}-hour limit`;
   const days = seconds / 86_400;
@@ -207,8 +209,8 @@ async function fetchClaude(): Promise<RemainingRow[]> {
     baseRow("fable_week", "fable", "weekly", "Fable"),
   ];
   const rowsStillValid = lastClaudeRows != null && !lastClaudeRows.some((r) => cachedWindowHasReset(r, now));
-  // The minimum interval applies to manual refreshes too: the endpoint blocks the
-  // whole account for an hour when it is polled too often.
+  // The UI syncs every 10 seconds, but Anthropic's endpoint blocks the whole
+  // account when polled too often, so Claude retains its own five-minute floor.
   if (rowsStillValid && now - lastClaudeAt < CLAUDE_MIN_INTERVAL_MS) return lastClaudeRows!;
 
   const creds = await readClaudeCredentials();
@@ -264,22 +266,87 @@ async function fetchClaude(): Promise<RemainingRow[]> {
   }
   if (!body) return fallback;
 
-  const fableLimit = body.limits?.find((entry) => {
-    if (entry.kind !== "weekly_scoped") return false;
-    const name = `${entry.scope?.model?.display_name ?? ""} ${entry.scope?.model?.id ?? ""}`.toLowerCase();
-    return name.includes("fable") || name.includes("omelette");
+  const scopedRows = (body.limits ?? []).flatMap((entry, index) => {
+    if (entry.kind !== "weekly_scoped") return [];
+    const displayName = entry.scope?.model?.display_name || entry.scope?.model?.id || `Model ${index + 1}`;
+    const normalized = displayName.toLowerCase();
+    const isFable = normalized.includes("fable") || normalized.includes("omelette");
+    const id = displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || `model_${index}`;
+    return [row(
+      `claude_scope_${id}`,
+      isFable ? "fable" : "claude",
+      "weekly",
+      isFable ? "Fable" : "Claude",
+      remainingFromUsed(entry.percent),
+      entry.resets_at,
+      null,
+      `${displayName} · 1-week limit`,
+    )];
   });
-  const fableUsed = fableLimit?.percent ?? body.seven_day_omelette?.utilization;
-  const fableReset = fableLimit?.resets_at ?? body.seven_day_omelette?.resets_at ?? body.seven_day?.resets_at;
+  const hasScopedFable = scopedRows.some((item) => item.brand === "fable");
+  const legacyFableUsed = body.seven_day_omelette?.utilization;
+  const legacyFable = !hasScopedFable && typeof legacyFableUsed === "number"
+    ? [row("fable_week", "fable", "weekly", "Fable", remainingFromUsed(legacyFableUsed), body.seven_day_omelette?.resets_at, null, "Fable · 1-week limit")]
+    : [];
 
   const rows = [
     row("claude_session", "claude", "session", "Claude", remainingFromUsed(body.five_hour?.utilization), body.five_hour?.resets_at, null, "5-hour limit"),
     row("claude_week", "claude", "weekly", "Claude", remainingFromUsed(body.seven_day?.utilization), body.seven_day?.resets_at, null, "1-week limit"),
-    row("fable_week", "fable", "weekly", "Fable", remainingFromUsed(fableUsed), fableReset, null, "Fable · 1-week limit"),
+    ...scopedRows,
+    ...legacyFable,
   ];
   lastClaudeRows = rows;
   lastClaudeAt = Date.now();
   saveCache();
+  return rows;
+}
+
+type CodexWindow = { used_percent?: number; reset_at?: number; limit_window_seconds?: number };
+type CodexRateLimit = { primary_window?: CodexWindow | null; secondary_window?: CodexWindow | null };
+type CodexUsageBody = {
+  rate_limit?: CodexRateLimit;
+  additional_rate_limits?: Array<{
+    metered_feature?: string;
+    limit_name?: string;
+    rate_limit?: CodexRateLimit | null;
+  }>;
+};
+
+export function parseCodexUsage(body: unknown): RemainingRow[] {
+  if (!body || typeof body !== "object") return [];
+  const usage = body as CodexUsageBody;
+  const toIso = (epoch: number | undefined) => (epoch != null ? new Date(epoch * 1000).toISOString() : null);
+  const buckets = [
+    { id: "codex", name: null as string | null, rateLimit: usage.rate_limit },
+    ...(usage.additional_rate_limits ?? []).map((additional, index) => ({
+      id: additional.metered_feature || `additional_${index}`,
+      name: additional.limit_name || additional.metered_feature || "Additional limit",
+      rateLimit: additional.rate_limit ?? undefined,
+    })),
+  ];
+  const rows: RemainingRow[] = [];
+  for (const bucket of buckets) {
+    const windows = [bucket.rateLimit?.primary_window, bucket.rateLimit?.secondary_window]
+      .filter((window): window is CodexWindow => window != null);
+    for (const [index, window] of windows.entries()) {
+      const seconds = typeof window.limit_window_seconds === "number" && window.limit_window_seconds > 0
+        ? window.limit_window_seconds
+        : null;
+      const group: Group = seconds != null && seconds <= 6 * 3600 ? "session" : "weekly";
+      const safeBucket = bucket.id.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      const label = durationLimitLabel(seconds, "Usage limit");
+      rows.push(row(
+        `${safeBucket}_${index}`,
+        "codex",
+        group,
+        "Codex",
+        remainingFromUsed(window.used_percent),
+        toIso(window.reset_at),
+        null,
+        bucket.name ? `${bucket.name} · ${label}` : label,
+      ));
+    }
+  }
   return rows;
 }
 
@@ -302,43 +369,7 @@ async function fetchCodex(): Promise<RemainingRow[]> {
   if (!res.ok) return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
   const text = await res.text();
   if (text.trim().startsWith("<")) return fallback;
-  type CodexWindow = { used_percent?: number; reset_at?: number; limit_window_seconds?: number };
-  const body = JSON.parse(text) as {
-    rate_limit?: {
-      primary_window?: CodexWindow | null;
-      secondary_window?: CodexWindow | null;
-    };
-  };
-  const primary = body.rate_limit?.primary_window;
-  const secondary = body.rate_limit?.secondary_window;
-  const toIso = (epoch: number | undefined) => (epoch != null ? new Date(epoch * 1000).toISOString() : null);
-  // Codex window semantics vary by plan; classify by window length when the API
-  // reports it, else by reset horizon.
-  const windows = [primary, secondary].filter((w): w is CodexWindow => w != null);
-  const rows: RemainingRow[] = [];
-  for (const w of windows) {
-    const iso = toIso(w.reset_at);
-    let isSession: boolean;
-    if (typeof w.limit_window_seconds === "number") {
-      isSession = w.limit_window_seconds <= 6 * 3600;
-    } else {
-      const hours = iso ? (new Date(iso).getTime() - Date.now()) / 3_600_000 : null;
-      isSession = hours != null && hours <= 10;
-    }
-    const group: Group = isSession ? "session" : "weekly";
-    const id = isSession ? "codex_session" : "codex_week";
-    if (rows.some((r) => r.id === id)) continue;
-    rows.push(row(
-      id,
-      "codex",
-      group,
-      "Codex",
-      remainingFromUsed(w.used_percent),
-      iso,
-      null,
-      durationLimitLabel(w.limit_window_seconds, isSession ? "Session limit" : "Weekly limit"),
-    ));
-  }
+  const rows = parseCodexUsage(JSON.parse(text));
   if (rows.length === 0) return credentialDetail(fallback, result.detail);
   // Some plans expose only a weekly window. Do not create a placeholder for a
   // limit the endpoint did not report.
@@ -371,7 +402,8 @@ export function parseGrokBilling(body: GrokBillingBody | null | undefined): Rema
   const periodSeconds = Number.isFinite(periodStartMs) && Number.isFinite(periodEndMs)
     ? (periodEndMs - periodStartMs) / 1000
     : null;
-  const metricLabel = durationLimitLabel(periodSeconds);
+  const periodType = config.currentPeriod?.type?.toLowerCase() ?? "";
+  const metricLabel = durationLimitLabel(periodSeconds, periodType.includes("week") ? "Weekly usage pool" : "Usage limit");
   const usedPct = config.creditUsagePercent;
   if (typeof usedPct === "number" && Number.isFinite(usedPct)) {
     return row("grok_week", "grok", "weekly", "Grok", remainingFromUsed(usedPct), periodEnd, null, metricLabel);
@@ -379,15 +411,16 @@ export function parseGrokBilling(body: GrokBillingBody | null | undefined): Rema
   const limit = config.monthlyLimit?.val ?? null;
   const used = config.used?.val ?? body?.usage?.creditUsage ?? null;
   if (limit != null && limit > 0 && used != null) {
+    const legacyMonthly = !config.currentPeriod && config.monthlyLimit != null;
     return row(
-      "grok_week",
+      legacyMonthly ? "grok_month" : "grok_week",
       "grok",
       "weekly",
       "Grok",
       remainingFromUsed((used / limit) * 100),
       periodEnd,
       `of ${Math.round(limit)} credits`,
-      metricLabel,
+      legacyMonthly ? "Monthly credits" : metricLabel,
     );
   }
   if (periodEnd) {
@@ -507,7 +540,7 @@ async function fetchCursor(): Promise<RemainingRow> {
     body.planUsage.totalSpend != null && body.planUsage.limit != null
       ? `used $${Math.round(body.planUsage.totalSpend / 100)} · included $${Math.round(body.planUsage.limit / 100)} · monthly`
       : "monthly";
-  return row("cursor_month", "cursor", "weekly", "Cursor", remainingFromUsed(usedPct), resetIso, detail, "Monthly limit");
+  return row("cursor_month", "cursor", "weekly", "Cursor", remainingFromUsed(usedPct), resetIso, detail, "Included usage · billing cycle");
 }
 
 type KimiUsageRow = {
@@ -531,6 +564,27 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
   const root = body as Record<string, unknown>;
   const payload = (root.data && typeof root.data === "object" ? root.data : root) as Record<string, unknown>;
   if (payload.kind === "error") return [];
+  const result = new Map<string, RemainingRow>();
+
+  // The current account payload names subscription-specific constraints directly.
+  // Keep those names distinct rather than guessing a weekly bucket from position.
+  const usages = payload.usages && typeof payload.usages === "object" && !Array.isArray(payload.usages)
+    ? payload.usages as Record<string, unknown>
+    : null;
+  const namedLimits: Record<string, { id: string; group: Group; label: string }> = {
+    limit_5h: { id: "kimi_5h", group: "session", label: "5-hour rolling usage" },
+    limit_month_total: { id: "kimi_month_total", group: "weekly", label: "Membership monthly usage" },
+    limit_month_code: { id: "kimi_month_code", group: "weekly", label: "Kimi Code monthly usage" },
+  };
+  for (const [name, raw] of Object.entries(usages ?? {})) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const value = raw as { used_ratio?: number; reset_time?: string };
+    if (typeof value.used_ratio !== "number" || !Number.isFinite(value.used_ratio)) continue;
+    const known = namedLimits[name] ?? { id: `kimi_${name}`, group: "weekly" as Group, label: "Usage limit" };
+    const usedPct = value.used_ratio <= 1 ? value.used_ratio * 100 : value.used_ratio;
+    result.set(known.id, row(known.id, "kimi", known.group, "Kimi", remainingFromUsed(usedPct), value.reset_time, null, known.label));
+  }
+
   const candidates: KimiUsageRow[] = [];
   if (payload.summary && typeof payload.summary === "object") candidates.push(payload.summary as KimiUsageRow);
   if (payload.usage && typeof payload.usage === "object") candidates.push(payload.usage as KimiUsageRow);
@@ -546,23 +600,19 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
       });
     }
   }
-  const result = new Map<Group, RemainingRow>();
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
     const duration = Number(candidate.window?.duration);
     const unit = (candidate.window?.unit ?? candidate.window?.timeUnit)?.toLowerCase().replace("time_unit_", "");
     const hours = unit === "minute" ? duration / 60 : unit === "hour" ? duration : unit === "day" ? duration * 24 : unit === "week" ? duration * 168 : null;
-    const group: Group = hours != null && hours <= 6 ? "session" : "weekly";
-    if (!result.has(group)) {
-      const suffix = group === "session" ? "session" : "week";
-      result.set(group, parseKimiRow(
-        candidate,
-        `kimi_${suffix}`,
-        group,
-        "Kimi",
-        durationLimitLabel(hours == null ? null : hours * 3600, group === "session" ? "Session limit" : "Plan limit"),
-      ));
-    }
+    const seconds = hours == null || !Number.isFinite(hours) ? null : hours * 3600;
+    const isFiveHour = seconds === 5 * 3600;
+    const isWeek = seconds === 7 * 86_400;
+    const id = isFiveHour ? "kimi_5h" : isWeek ? "kimi_week" : `kimi_limit_${index}`;
+    if (result.has(id)) continue;
+    const group: Group = seconds != null && seconds <= 6 * 3600 ? "session" : "weekly";
+    result.set(id, parseKimiRow(candidate, id, group, "Kimi", durationLimitLabel(seconds, "Usage limit")));
   }
+
   const wallet = payload.extra_usage && typeof payload.extra_usage === "object"
     ? payload.extra_usage as Record<string, unknown>
     : payload.boosterWallet && typeof payload.boosterWallet === "object"
@@ -580,14 +630,16 @@ export function parseKimiUsage(body: unknown): RemainingRow[] {
       : null;
     const currency = typeof wallet?.currency === "string" && wallet.currency
       ? wallet.currency
-      : typeof rawMonthlyLimit?.currency === "string" && rawMonthlyLimit.currency ? rawMonthlyLimit.currency : "CNY";
-    result.set("balance", {
-      ...baseRow("kimi_balance", "kimi", "balance", "Kimi"),
-      metricLabel: "Extra usage balance",
-      remainingText: `${currency} ${(balanceCents / 100).toFixed(2)}`,
-      detail: "extra usage balance",
-      status: "available",
-    });
+      : typeof rawMonthlyLimit?.currency === "string" && rawMonthlyLimit.currency ? rawMonthlyLimit.currency : null;
+    if (currency) {
+      result.set("kimi_balance", {
+        ...baseRow("kimi_balance", "kimi", "balance", "Kimi"),
+        metricLabel: "Extra usage balance",
+        remainingText: `${currency} ${(balanceCents / 100).toFixed(2)}`,
+        detail: "extra usage balance",
+        status: "available",
+      });
+    }
   }
   return [...result.values()].filter((item) => item.status === "available");
 }
@@ -617,6 +669,9 @@ type GlmLimit = {
   unit?: number;
   number?: number;
   percentage?: number;
+  usage?: number;
+  currentValue?: number;
+  remaining?: number;
   nextResetTime?: number | string;
 };
 
@@ -635,16 +690,23 @@ export function parseGlmLimits(body: unknown): RemainingRow[] {
       const numeric = Number(raw.nextResetTime);
       if (Number.isFinite(numeric)) resetIso = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric).toISOString();
     }
-    const session = raw.unit === 3 && (raw.number ?? 5) <= 6;
-    const group: Group = session ? "session" : "weekly";
+    const fiveHour = raw.unit === 3 && raw.number === 5;
+    const weekly = raw.unit === 6 && raw.number === 1;
+    const monthlyMcp = type === "TIME_LIMIT" && raw.unit === 5 && raw.number === 1;
+    const group: Group = fiveHour ? "session" : "weekly";
     const kind = type === "TOKENS_LIMIT" ? "token" : type === "CREDIT_LIMIT" ? "credit" : "mcp";
-    const label = type === "TIME_LIMIT" ? "GLM MCP" : "GLM";
-    const metricLabel = type === "TIME_LIMIT"
-      ? "MCP limit"
-      : session
-        ? `${raw.number ?? 5}-hour ${kind} limit`
-        : `${kind[0].toUpperCase()}${kind.slice(1)} limit`;
-    rows.push(row(`glm_${kind}_${group}`, "glm", group, label, remainingFromUsed(usedPct), resetIso, null, metricLabel));
+    const noun = kind === "credit" ? "credits" : kind === "token" ? "token usage" : "MCP usage";
+    const metricLabel = fiveHour
+      ? `5-hour ${noun}`
+      : weekly
+        ? `Weekly ${noun}`
+        : monthlyMcp ? "MCP usage · 1 month" : "Usage limit";
+    const detail = typeof raw.remaining === "number" && typeof raw.usage === "number"
+      ? `${raw.remaining} of ${raw.usage} ${kind === "mcp" ? "calls" : "credits"} remaining`
+      : typeof raw.currentValue === "number" && typeof raw.usage === "number"
+        ? `${raw.currentValue} of ${raw.usage} used`
+        : null;
+    rows.push(row(`glm_${kind}_${raw.unit ?? "unknown"}_${raw.number ?? "unknown"}`, "glm", group, "GLM", remainingFromUsed(usedPct), resetIso, detail, metricLabel));
   }
   return rows;
 }
@@ -681,21 +743,42 @@ async function fetchGlm(): Promise<RemainingRow[]> {
   return credentialDetail(parsed.length > 0 ? parsed : fallback, result.detail);
 }
 
+function decimalMoney(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).trim();
+  const match = text.match(/^(-?\d+)(?:\.(\d+))?$/);
+  if (!match) return null;
+  return `${match[1]}.${(match[2] ?? "").padEnd(2, "0")}`;
+}
+
 export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
   if (!body || typeof body !== "object") return [];
-  const infos = (body as { balance_infos?: unknown }).balance_infos;
-  if (!Array.isArray(infos)) return [];
-  return infos.flatMap((raw, index) => {
+  const root = body as { is_available?: boolean; balance_infos?: unknown };
+  if (!Array.isArray(root.balance_infos)) return [];
+  return root.balance_infos.flatMap((raw, index) => {
     if (!raw || typeof raw !== "object") return [];
-    const info = raw as { currency?: string; total_balance?: string | number };
-    const amount = Number(info.total_balance);
-    if (!Number.isFinite(amount)) return [];
-    const currency = info.currency || "CNY";
+    const info = raw as {
+      currency?: string;
+      total_balance?: string | number;
+      granted_balance?: string | number;
+      topped_up_balance?: string | number;
+    };
+    if (!info.currency) return [];
+    const total = decimalMoney(info.total_balance);
+    if (!total) return [];
+    const granted = decimalMoney(info.granted_balance);
+    const toppedUp = decimalMoney(info.topped_up_balance);
+    const components = [
+      root.is_available === false ? "Insufficient balance for API calls" : root.is_available === true ? "Available for API calls" : "",
+      granted ? `granted ${info.currency} ${granted}` : "",
+      toppedUp ? `topped up ${info.currency} ${toppedUp}` : "",
+    ].filter(Boolean);
     return [{
-      ...baseRow(`deepseek_balance_${currency.toLowerCase()}_${index}`, "deepseek", "balance", "DeepSeek"),
+      ...baseRow(`deepseek_balance_${info.currency.toLowerCase()}_${index}`, "deepseek", "balance", "DeepSeek"),
       metricLabel: "API balance",
-      remainingText: `${currency} ${amount.toFixed(2)}`,
-      detail: "API account balance",
+      remainingText: `${info.currency} ${total}`,
+      detail: components.join(" · ") || "API account balance",
+      tone: root.is_available === false ? "danger" as const : "default" as const,
       status: "available" as const,
     }];
   });
@@ -815,7 +898,7 @@ function pillText(rows: RemainingRow[]): string {
   return rows.map((r) => `${r.label} ${r.remainingText}`).join(" · ");
 }
 
-export async function fetchUsage(input: { force?: boolean } = {}): Promise<UsageSnapshot> {
+async function fetchUsageNow(): Promise<UsageSnapshot> {
   await loadCache();
   const [claude, codex, grok, cursor, kimi, glm, deepseek] = await Promise.allSettled([
     fetchClaude(),
@@ -865,4 +948,30 @@ export async function fetchUsage(input: { force?: boolean } = {}): Promise<Usage
     pillText: pillText(merged.filter((item) => item.status !== "unavailable")),
     rows: [...session, ...weekly, ...balance],
   };
+}
+
+let usageInFlight: Promise<UsageSnapshot> | null = null;
+let lastUsageSnapshot: UsageSnapshot | null = null;
+let lastUsageSnapshotAt = 0;
+const SNAPSHOT_COALESCE_MS = 5_000;
+
+export async function fetchUsage(): Promise<UsageSnapshot> {
+  if (usageInFlight) return usageInFlight;
+  if (lastUsageSnapshot && Date.now() - lastUsageSnapshotAt < SNAPSHOT_COALESCE_MS) {
+    return {
+      ...lastUsageSnapshot,
+      rows: lastUsageSnapshot.rows.map((item) => ({
+        ...item,
+        resetAt: item.resetIso ? resetLabel(item.resetIso) : null,
+      })),
+    };
+  }
+  usageInFlight = fetchUsageNow()
+    .then((snapshot) => {
+      lastUsageSnapshot = snapshot;
+      lastUsageSnapshotAt = Date.now();
+      return snapshot;
+    })
+    .finally(() => { usageInFlight = null; });
+  return usageInFlight;
 }

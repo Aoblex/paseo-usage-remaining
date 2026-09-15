@@ -9,7 +9,7 @@ for the full dashboard. On narrow web screens the refresh button moves out of th
 inline display; provider values retain their reset labels and wrap when needed.
 
 On iOS, the same horizontal flow stays above the input and wraps when needed. Tap it to open all providers in a scrollable sheet.
-The dashboard and mobile sheet are provider-first: each provider occupies one full-width card with its logo, credential source, and only the limits that provider actually reports. Window labels preserve provider semantics, such as `5-hour limit`, `1-week limit`, `Monthly limit`, `Fable · 1-week limit`, `MCP limit`, or `API balance`; unsupported or absent windows are omitted rather than shown as placeholders. Fable stays inside Claude and MCP stays inside GLM. Failed refreshes preserve the last values and explain the error inside the affected provider card.
+The dashboard and mobile sheet are provider-first: each provider occupies one full-width card with its logo, credential source, and only the limits that provider actually reports. Window labels preserve provider semantics, such as `5-hour rolling usage`, `1-week limit`, `Membership monthly usage`, `Fable · 1-week limit`, `MCP usage · 1 month`, or `API balance`; unsupported or absent windows are omitted rather than shown as placeholders. Fable stays inside Claude and MCP stays inside GLM. Failed refreshes preserve the last values and explain the error inside the affected provider card.
 
 ## What it reads
 
@@ -20,7 +20,7 @@ The dashboard and mobile sheet are provider-first: each provider occupies one fu
 | Grok | Environment, Pi/OpenCode `xai`/`grok`, or Grok CLI (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
 | Cursor | Cursor desktop / `cursor-agent` login | Individual plans only — team-billed seats don't expose plan usage |
 | Kimi | Environment, Pi/OpenCode Kimi providers, or Kimi Code (`~/.kimi-code/credentials/kimi-code.json`) | Shows short/weekly plan windows and extra-usage balance; Pi `kimi-coding` OAuth can be refreshed safely |
-| GLM | Environment, Pi/OpenCode `glm`/`zai` providers, or `~/.config/glm-acp-agent/credentials.json` | Shows Coding Plan token/credit windows and monthly MCP quota |
+| GLM | Environment, Pi/OpenCode `glm`/`zai` providers, or `~/.config/glm-acp-agent/credentials.json` | Shows returned 5-hour/weekly token or credit windows; legacy monthly MCP appears only when the account API returns it |
 | DeepSeek | Environment, Pi/OpenCode `deepseek`, or `~/.deepseek/auth.json` | Shows API account cash balance, not web membership usage |
 
 Pi credentials come from `~/.pi/agent/auth.json`. OpenCode credentials come from `$OPENCODE_AUTH_CONTENT` or `$XDG_DATA_HOME/opencode/auth.json` (normally `~/.local/share/opencode/auth.json`). The plugin discovers candidates without copying them into its own storage, deduplicates identical secrets, and tries the next source after an authentication rejection. The default priority is `env,pi,opencode,official-cli`; override it with a comma-separated `USAGE_REMAINING_CREDENTIAL_PRIORITY`, for example `pi,opencode,official-cli,env`.
@@ -48,9 +48,8 @@ paseo plugin update usage-remaining
 
 ## Behavior details
 
-- Refreshes every 60s. Claude is polled at most every 5 min. Anthropic's usage endpoint answers `429` (retry-after about an hour) for tokens it will not serve: expired access tokens and long-lived `claude setup-token` tokens. A fresh token from an interactive Claude Code login answers normally. The plugin skips expired tokens without a request, prefers keychain/file tokens over the env setup token, and remembers a per-token cooldown across reloads.
+- Synchronizes automatically every 10s with no manual refresh control. Claude is still polled at most every 5 min. Anthropic's usage endpoint answers `429` (retry-after about an hour) for tokens it will not serve: expired access tokens and long-lived `claude setup-token` tokens. A fresh token from an interactive Claude Code login answers normally. The plugin skips expired tokens without a request, prefers keychain/file tokens over the env setup token, and remembers a per-token cooldown across reloads.
 - If the Claude rows stay hidden, the keychain token has expired and nothing is refreshing it (Paseo-launched agents use the setup token). Run `claude` once without `CLAUDE_CODE_OAUTH_TOKEN` in the environment; Claude Code refreshes the keychain credential and the rows return within 5 min.
-- The wide inline display and dashboard include a manual refresh button. A manual refresh re-queries Codex, Grok, and Cursor immediately; Claude still keeps its 5-minute minimum interval and any active cooldown. After a manual refresh, the button shows a shared 2-minute countdown before it can be pressed again.
 - If a provider's token is mid-rotation (common while agents run), the plugin serves the **last good value** from a small local cache (`$PASEO_HOME/usage-remaining.cache.json`) instead of flickering to "—". Absolute reset timestamps are cached, so countdown labels keep updating even while the provider API is rate-limited.
 - Provider windows that never had data (not signed in) are omitted from the inline display and explained in the dashboard. If none are available, it says `Usage unavailable`.
 - A provider that answered recently but stops answering (for example right after its window resets, before the API reports the new period) stays in the strip as a dimmed `—` chip instead of silently disappearing. The dashboard card says `window reset · waiting for provider`.

@@ -86,7 +86,7 @@ export function registerUsagePills(client: PluginClientContext, fetchUsage: () =
     } finally { fetching = false; }
   }
   void refresh();
-  const timer = setInterval(() => void refresh(), 60_000);
+  const timer = setInterval(() => void refresh(), 10_000);
   return () => {
     stopped = true;
     clearInterval(timer);

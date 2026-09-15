@@ -1,20 +1,19 @@
 import { type PluginClientContext, type PluginSurfaceProps, type PluginButtonIconProps, type PluginButtonContentProps, useRpc } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Image, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { expandNativeComposer } from "./native-composer";
 import { expandWebComposer } from "./web-composer";
 import { registerUsagePills } from "./registry";
 import { providerLogos } from "./logos";
 import { groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
-import { listUsage, type RemainingRow, type UsageSnapshot } from "../shared/usage";
+import { listUsage, type RemainingRow } from "../shared/usage";
 
 type Theme = PluginSurfaceProps["theme"];
 
 const QUERY_KEY = ["usage-remaining"] as const;
-const AUTO_REFRESH_MS = 60_000;
-const MANUAL_REFRESH_COOLDOWN_MS = 120_000;
+const AUTO_REFRESH_MS = 10_000;
 
 function toneColor(theme: Theme, tone: RemainingRow["tone"]): string {
   if (tone === "ok") return theme.colors.statusSuccess;
@@ -25,64 +24,22 @@ function toneColor(theme: Theme, tone: RemainingRow["tone"]): string {
 
 function useUsage() {
   const list = useRpc(listUsage);
-  const queryClient = useQueryClient();
-  const [refreshError, setRefreshError] = useState<Error | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const query = useQuery({
+  return useQuery({
     queryKey: QUERY_KEY,
     queryFn: () => list({}),
     refetchInterval: AUTO_REFRESH_MS,
-    staleTime: 30_000,
+    staleTime: 5_000,
   });
-  return {
-    ...query,
-    isFetching: query.isFetching || refreshing,
-    isError: query.isError || refreshError !== null,
-    error: refreshError ?? query.error,
-    manualRefresh: async () => {
-      setRefreshing(true);
-      setRefreshError(null);
-      try {
-        const data = await list({ force: true });
-        queryClient.setQueryData<UsageSnapshot>(QUERY_KEY, data);
-      } catch {
-        setRefreshError(new Error("Could not refresh usage. Try again shortly."));
-      } finally { setRefreshing(false); }
-    },
-  };
-}
-
-// Shared across every pill and the dashboard so one manual refresh starts one cooldown.
-let manualRefreshAvailableAt = 0;
-const manualRefreshListeners = new Set<() => void>();
-
-function beginManualRefreshCooldown(): void {
-  manualRefreshAvailableAt = Date.now() + MANUAL_REFRESH_COOLDOWN_MS;
-  for (const listener of manualRefreshListeners) listener();
 }
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const update = () => setNow(Date.now());
-    manualRefreshListeners.add(update);
     const timer = setInterval(update, intervalMs);
-    return () => {
-      manualRefreshListeners.delete(update);
-      clearInterval(timer);
-    };
+    return () => clearInterval(timer);
   }, [intervalMs]);
   return now;
-}
-
-function useManualRefreshCooldown(): number {
-  const now = useNow(1_000);
-  return Math.max(0, Math.ceil((manualRefreshAvailableAt - now) / 1_000));
-}
-
-function formatCooldown(seconds: number): string {
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function formatAgo(iso: string | undefined, now: number): string | null {
@@ -94,59 +51,6 @@ function formatAgo(iso: string | undefined, now: number): string | null {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
   return `${Math.floor(minutes / 60)}h ago`;
-}
-
-function RefreshButton({
-  theme,
-  compact,
-  isFetching,
-  onRefresh,
-}: {
-  theme: Theme;
-  compact: boolean;
-  isFetching: boolean;
-  onRefresh: () => void;
-}) {
-  const cooldownSeconds = useManualRefreshCooldown();
-  const disabled = isFetching || cooldownSeconds > 0;
-  const label = cooldownSeconds > 0
-    ? compact ? formatCooldown(cooldownSeconds) : `Refresh in ${formatCooldown(cooldownSeconds)}`
-    : isFetching
-      ? compact ? "…" : "Refreshing…"
-      : compact ? "↻" : "↻ Refresh";
-
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={cooldownSeconds > 0 ? `Refresh available in ${cooldownSeconds} seconds` : "Refresh usage"}
-      disabled={disabled}
-      onPress={(event) => {
-        event.stopPropagation();
-        if (disabled) return;
-        beginManualRefreshCooldown();
-        onRefresh();
-      }}
-      style={{
-        minWidth: compact ? 32 : 76,
-        minHeight: compact ? 24 : 44,
-        paddingHorizontal: compact ? 6 : 12,
-        borderRadius: compact ? 7 : 9,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: disabled ? 0.55 : 1,
-      }}
-    >
-      <Text
-        numberOfLines={1}
-        style={{ color: disabled ? theme.colors.foregroundMuted : theme.colors.foreground, fontSize: compact ? 10 : 13, fontWeight: "700" }}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
 }
 
 function BrandMark({ row, theme, size, showLabel = false }: { row: RemainingRow; theme: Theme; size: number; showLabel?: boolean }) {
@@ -308,17 +212,9 @@ function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "lay
 
   return (
     <View style={styles.screen}>
-      <View style={{ flexDirection: layout.compact ? "column" : "row", alignItems: layout.compact ? "stretch" : "center", justifyContent: "space-between", gap: 12 }}>
-        <View style={{ gap: 2, flexShrink: 1 }}>
-          <Text style={styles.title}>Remaining usage</Text>
-          {updated ? <Text style={styles.subtitle}>Updated {updated} · auto-refreshes every minute</Text> : null}
-        </View>
-        <RefreshButton
-          theme={theme}
-          compact={false}
-          isFetching={usage.isFetching}
-          onRefresh={() => { void usage.manualRefresh(); }}
-        />
+      <View style={{ gap: 2, flexShrink: 1 }}>
+        <Text style={styles.title}>Remaining usage</Text>
+        {updated ? <Text style={styles.subtitle}>Updated {updated} · auto-refreshes every 10 seconds</Text> : null}
       </View>
       {usage.isError ? <Text style={styles.error}>{String(usage.error)}</Text> : null}
       {!usage.data && !usage.isError ? <Text style={styles.subtitle}>Loading…</Text> : null}
@@ -384,14 +280,6 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
       {visible.map((row) => (
         <UsageChip key={row.id} row={row} theme={theme} compact showReset />
       ))}
-      {narrow ? null : (
-        <RefreshButton
-          theme={theme}
-          compact
-          isFetching={usage.isFetching}
-          onRefresh={() => { void usage.manualRefresh(); }}
-        />
-      )}
     </View>
   );
 }

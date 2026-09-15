@@ -99,12 +99,8 @@ export function groupRowsByProvider(rows: RemainingRow[]): ProviderUsage[] {
         credentialSource ??= parsed.source;
         for (const message of parsed.messages) detailSet.add(message);
       }
-      const specificDetails = [...detailSet];
-      if (specificDetails.length > 1) {
-        const generic = specificDetails.indexOf("Not signed in or no usage data");
-        if (generic >= 0) specificDetails.splice(generic, 1);
-      }
       const hasAvailable = providerRows.some((row) => row.status === "available");
+      const specificDetails = [...detailSet].filter((detail) => !(detail === "Not signed in or no usage data" && (hasAvailable || detailSet.size > 1)));
       const hasFailureDetail = specificDetails.some((detail) => /query failed|rejected:|expired:|failed:|window reset/i.test(detail));
       const hasError = providerRows.some((row) => row.status === "error") || hasFailureDetail;
       return {

@@ -9,6 +9,7 @@ test('grok: creditUsagePercent drives the row when present', () => {
   assert.equal(row.status, 'available');
   assert.equal(row.remainingPct, 0);
   assert.equal(row.resetIso, period.end);
+  assert.equal(row.metricLabel, '1-week limit');
 });
 
 test('grok: a live period with the zero-valued usage fields omitted (protobuf JSON) is 100% remaining, not missing', () => {
@@ -34,6 +35,7 @@ test('grok: a live period with the zero-valued usage fields omitted (protobuf JS
 test('grok: limit/used fallback still works and a body without any period is unavailable', () => {
   const row = parseGrokBilling({ config: { monthlyLimit: { val: 200 }, used: { val: 50 } } });
   assert.equal(row.remainingPct, 75);
+  assert.equal(row.metricLabel, 'Monthly credits');
   assert.equal(row.detail, 'of 200 credits');
   assert.equal(parseGrokBilling({}).status, 'unavailable');
   assert.equal(parseGrokBilling(null).status, 'unavailable');
