@@ -5,8 +5,8 @@ export const RemainingToneSchema = z.enum(["default", "ok", "warning", "danger"]
 
 export const RemainingRowSchema = z.object({
   id: z.string(),
-  brand: z.enum(["claude", "fable", "codex", "grok", "cursor"]),
-  group: z.enum(["session", "weekly"]),
+  brand: z.enum(["claude", "fable", "codex", "grok", "cursor", "kimi", "glm", "deepseek"]),
+  group: z.enum(["session", "weekly", "balance"]),
   label: z.string(),
   remainingText: z.string(),
   remainingPct: z.number().nullable(),

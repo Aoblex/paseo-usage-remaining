@@ -262,6 +262,7 @@ function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "lay
   const rows = usage.data?.rows ?? [];
   const session = rows.filter((r) => r.group === "session");
   const weekly = rows.filter((r) => r.group === "weekly");
+  const balances = rows.filter((r) => r.group === "balance");
   const updated = formatAgo(usage.data?.fetchedAt, now);
   const styles = useMemo(
     () => ({
@@ -299,8 +300,12 @@ function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "lay
       {session.map((row) => (
         <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
       ))}
-      <Text style={styles.section}>Weekly (Cursor: monthly)</Text>
+      <Text style={styles.section}>Weekly / monthly</Text>
       {weekly.map((row) => (
+        <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
+      ))}
+      <Text style={styles.section}>API / extra usage balance</Text>
+      {balances.map((row) => (
         <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
       ))}
     </View>
@@ -335,7 +340,8 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
   // silently disappears; "unavailable" rows never had data and stay hidden.
   const session = rows.filter((r) => r.group === "session" && r.status !== "unavailable");
   const weekly = rows.filter((r) => r.group === "weekly" && r.status !== "unavailable");
-  if (session.length === 0 && weekly.length === 0) {
+  const balances = rows.filter((r) => r.group === "balance" && r.status !== "unavailable");
+  if (session.length === 0 && weekly.length === 0 && balances.length === 0) {
     return (
       <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted }}>
         {usage.data ? "Usage unavailable" : "Usage…"}
@@ -374,6 +380,7 @@ export function UsagePill({ theme, layout }: PluginButtonIconProps) {
       <View style={{ flexDirection: "column", gap: 2, flexShrink: 1, minWidth: 0 }}>
         {session.length > 0 ? groupRow("5H", session) : null}
         {weekly.length > 0 ? groupRow("WK", weekly) : null}
+        {balances.length > 0 ? groupRow("BAL", balances) : null}
       </View>
       {narrow ? null : (
         <RefreshButton

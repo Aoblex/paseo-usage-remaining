@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -104,6 +104,86 @@ async function readJson(path: string): Promise<unknown | null> {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
     return null;
+  }
+}
+
+const PI_AUTH_PATH = join(home, ".pi", "agent", "auth.json");
+
+async function readPiCredential(providerNames: string[], fieldNames: string[]): Promise<string | null> {
+  const auth = await readJson(PI_AUTH_PATH);
+  if (!auth || typeof auth !== "object") return null;
+  const providers = auth as Record<string, unknown>;
+  for (const providerName of providerNames) {
+    const entry = providers[providerName];
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    for (const fieldName of fieldNames) {
+      const value = record[fieldName];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  return null;
+}
+
+// Pi stores Kimi's 15-minute OAuth token in auth.json. Use the same lock directory
+// as Pi's proper-lockfile-backed credential store, double-check under the lock,
+// and persist a rotated refresh token before releasing it.
+async function readFreshPiKimiToken(force = false): Promise<string | null> {
+  const lockPath = `${PI_AUTH_PATH}.lock`;
+  let locked = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await mkdir(lockPath);
+      locked = true;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  if (!locked) return null;
+  try {
+    const auth = await readJson(PI_AUTH_PATH);
+    if (!auth || typeof auth !== "object") return null;
+    const providers = auth as Record<string, unknown>;
+    const current = providers["kimi-coding"] as {
+      type?: string;
+      access?: string;
+      refresh?: string;
+      expires?: number;
+    } | undefined;
+    if (current?.type !== "oauth" || !current.access || !current.refresh) return null;
+    if (!force && typeof current.expires === "number" && current.expires > Date.now() + 60_000) return current.access;
+
+    const res = await fetchWithTimeout("https://auth.kimi.com/api/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams({
+        client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
+        grant_type: "refresh_token",
+        refresh_token: current.refresh,
+      }).toString(),
+    });
+    const body = await res.json().catch(() => null) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    } | null;
+    if (!res.ok || !body?.access_token || typeof body.expires_in !== "number") {
+      console.log(`[usage-remaining] kimi: OAuth refresh failed (${res.status})`);
+      return null;
+    }
+    const updated = {
+      ...current,
+      access: body.access_token,
+      refresh: body.refresh_token || current.refresh,
+      expires: Date.now() + body.expires_in * 1000,
+    };
+    providers["kimi-coding"] = updated;
+    await writeFile(PI_AUTH_PATH, `${JSON.stringify(providers, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    return updated.access;
+  } finally {
+    await rmdir(lockPath).catch(() => undefined);
   }
 }
 
@@ -270,7 +350,18 @@ async function fetchCodex(): Promise<RemainingRow[]> {
   ].filter(Boolean);
   let accessToken: string | undefined;
   let accountId: string | undefined;
+  const piAuth = await readJson(PI_AUTH_PATH);
+  const piCodex = (piAuth as Record<string, unknown> | null)?.["openai-codex"] as {
+    type?: string;
+    access?: string;
+    accountId?: string;
+  } | undefined;
+  if (piCodex?.type === "oauth" && piCodex.access) {
+    accessToken = piCodex.access;
+    accountId = piCodex.accountId;
+  }
   for (const path of paths) {
+    if (accessToken) break;
     const auth = await readJson(path);
     const tokens = (auth as { tokens?: { access_token?: string; account_id?: string } } | null)?.tokens;
     if (tokens?.access_token) {
@@ -504,6 +595,218 @@ async function fetchCursor(): Promise<RemainingRow> {
   return row("cursor_month", "cursor", "weekly", "Cursor", remainingFromUsed(usedPct), resetIso, detail);
 }
 
+type KimiUsageRow = {
+  name?: string;
+  window?: { duration?: number; unit?: string };
+  used?: number;
+  limit?: number;
+  reset_at?: string;
+  resetTime?: string;
+};
+
+function parseKimiRow(raw: KimiUsageRow, id: string, group: Group, label: string): RemainingRow {
+  const used = Number(raw.used);
+  const limit = Number(raw.limit);
+  const usedPct = Number.isFinite(used) && Number.isFinite(limit) && limit > 0 ? (used / limit) * 100 : null;
+  return row(id, "kimi", group, label, remainingFromUsed(usedPct), raw.reset_at ?? raw.resetTime);
+}
+
+export function parseKimiUsage(body: unknown): RemainingRow[] {
+  if (!body || typeof body !== "object") return [];
+  const root = body as Record<string, unknown>;
+  const payload = (root.data && typeof root.data === "object" ? root.data : root) as Record<string, unknown>;
+  if (payload.kind === "error") return [];
+  const candidates: KimiUsageRow[] = [];
+  if (payload.summary && typeof payload.summary === "object") candidates.push(payload.summary as KimiUsageRow);
+  if (payload.usage && typeof payload.usage === "object") candidates.push(payload.usage as KimiUsageRow);
+  if (Array.isArray(payload.limits)) {
+    for (const item of payload.limits) {
+      if (!item || typeof item !== "object") continue;
+      const record = item as Record<string, unknown>;
+      const detail = record.detail && typeof record.detail === "object" ? record.detail as KimiUsageRow : record as KimiUsageRow;
+      candidates.push({
+        ...detail,
+        name: typeof record.name === "string" ? record.name : detail.name,
+        window: record.window && typeof record.window === "object" ? record.window as KimiUsageRow["window"] : detail.window,
+      });
+    }
+  }
+  const result = new Map<Group, RemainingRow>();
+  for (const candidate of candidates) {
+    const duration = Number(candidate.window?.duration);
+    const unit = candidate.window?.unit?.toLowerCase().replace("time_unit_", "");
+    const hours = unit === "minute" ? duration / 60 : unit === "hour" ? duration : unit === "day" ? duration * 24 : unit === "week" ? duration * 168 : null;
+    const group: Group = hours != null && hours <= 6 ? "session" : "weekly";
+    if (!result.has(group)) {
+      const suffix = group === "session" ? "session" : "week";
+      result.set(group, parseKimiRow(candidate, `kimi_${suffix}`, group, "Kimi"));
+    }
+  }
+  const wallet = payload.extra_usage && typeof payload.extra_usage === "object"
+    ? payload.extra_usage as Record<string, unknown>
+    : payload.boosterWallet && typeof payload.boosterWallet === "object"
+      ? payload.boosterWallet as Record<string, unknown>
+      : null;
+  const wireBalanceCents = Number(wallet?.balance_cents);
+  const rawBalance = wallet?.balance && typeof wallet.balance === "object" ? wallet.balance as Record<string, unknown> : null;
+  const rawAmountLeft = Number(rawBalance?.amountLeft);
+  const balanceCents = Number.isFinite(wireBalanceCents)
+    ? wireBalanceCents
+    : Number.isFinite(rawAmountLeft) ? Math.round(rawAmountLeft / 1_000_000) : Number.NaN;
+  if (Number.isFinite(balanceCents)) {
+    const rawMonthlyLimit = wallet?.monthlyChargeLimit && typeof wallet.monthlyChargeLimit === "object"
+      ? wallet.monthlyChargeLimit as Record<string, unknown>
+      : null;
+    const currency = typeof wallet?.currency === "string" && wallet.currency
+      ? wallet.currency
+      : typeof rawMonthlyLimit?.currency === "string" && rawMonthlyLimit.currency ? rawMonthlyLimit.currency : "CNY";
+    result.set("balance", {
+      ...baseRow("kimi_balance", "kimi", "balance", "Kimi"),
+      remainingText: `${currency} ${(balanceCents / 100).toFixed(2)}`,
+      detail: "extra usage balance",
+      status: "available",
+    });
+  }
+  return [...result.values()].filter((item) => item.status === "available");
+}
+
+async function fetchKimi(): Promise<RemainingRow[]> {
+  const fallback = [
+    baseRow("kimi_session", "kimi", "session", "Kimi"),
+    baseRow("kimi_week", "kimi", "weekly", "Kimi"),
+  ];
+  const credential = await readJson(join(home, ".kimi-code", "credentials", "kimi-code.json"));
+  const envToken = process.env.KIMI_CODE_ACCESS_TOKEN;
+  const piToken = envToken ? null : await readFreshPiKimiToken();
+  let accessToken = envToken
+    || piToken
+    || await readPiCredential(["moonshotai-cn", "moonshotai"], ["access", "key"])
+    || (credential as { access_token?: string } | null)?.access_token;
+  if (!accessToken) return fallback;
+  let res = await fetchWithTimeout("https://api.kimi.com/coding/v1/usages", {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+  });
+  if (res.status === 401 && piToken) {
+    const refreshed = await readFreshPiKimiToken(true);
+    if (refreshed) {
+      accessToken = refreshed;
+      res = await fetchWithTimeout("https://api.kimi.com/coding/v1/usages", {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      });
+    }
+  }
+  if (!res.ok) {
+    console.log(`[usage-remaining] kimi: ${res.status} from usage endpoint`);
+    return fallback;
+  }
+  const parsed = parseKimiUsage(await res.json());
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+type GlmLimit = {
+  type?: string;
+  unit?: number;
+  number?: number;
+  percentage?: number;
+  nextResetTime?: number | string;
+};
+
+export function parseGlmLimits(body: unknown): RemainingRow[] {
+  if (!body || typeof body !== "object") return [];
+  const root = body as Record<string, unknown>;
+  const payload = (root.data && typeof root.data === "object" ? root.data : root) as Record<string, unknown>;
+  if (!Array.isArray(payload.limits)) return [];
+  const rows: RemainingRow[] = [];
+  for (const raw of payload.limits as GlmLimit[]) {
+    const type = raw.type;
+    if (type !== "TOKENS_LIMIT" && type !== "CREDIT_LIMIT" && type !== "TIME_LIMIT") continue;
+    const usedPct = typeof raw.percentage === "number" ? raw.percentage : null;
+    let resetIso: string | null = null;
+    if (raw.nextResetTime != null) {
+      const numeric = Number(raw.nextResetTime);
+      if (Number.isFinite(numeric)) resetIso = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric).toISOString();
+    }
+    const session = raw.unit === 3 && (raw.number ?? 5) <= 6;
+    const group: Group = session ? "session" : "weekly";
+    const suffix = type === "TIME_LIMIT" ? "mcp" : session ? "session" : "week";
+    const label = type === "TIME_LIMIT" ? "GLM MCP" : "GLM";
+    rows.push(row(`glm_${suffix}`, "glm", group, label, remainingFromUsed(usedPct), resetIso));
+  }
+  return rows;
+}
+
+async function readGlmKey(): Promise<string | null> {
+  if (process.env.Z_AI_API_KEY) return process.env.Z_AI_API_KEY;
+  if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_BASE_URL?.includes("bigmodel")) return process.env.ANTHROPIC_AUTH_TOKEN;
+  const piKey = await readPiCredential(["glm", "zai-coding-cn", "zai", "zhipu"], ["key", "access"]);
+  if (piKey) return piKey;
+  const auth = await readJson(join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "glm-acp-agent", "credentials.json"));
+  const key = (auth as { z_ai_api_key?: string } | null)?.z_ai_api_key;
+  return typeof key === "string" && key ? key : null;
+}
+
+async function fetchGlm(): Promise<RemainingRow[]> {
+  const fallback = [
+    baseRow("glm_session", "glm", "session", "GLM"),
+    baseRow("glm_mcp", "glm", "weekly", "GLM MCP"),
+  ];
+  const key = await readGlmKey();
+  if (!key) return fallback;
+  const china = process.env.ANTHROPIC_BASE_URL?.includes("bigmodel");
+  const origin = china ? "https://open.bigmodel.cn" : "https://api.z.ai";
+  let res = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
+    headers: { Authorization: key, Accept: "application/json" },
+  });
+  if (res.status === 401 || res.status === 403) {
+    res = await fetchWithTimeout(`${origin}/api/monitor/usage/quota/limit`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    });
+  }
+  if (!res.ok) {
+    console.log(`[usage-remaining] glm: ${res.status} from quota endpoint`);
+    return fallback;
+  }
+  const parsed = parseGlmLimits(await res.json());
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+export function parseDeepSeekBalance(body: unknown): RemainingRow[] {
+  if (!body || typeof body !== "object") return [];
+  const infos = (body as { balance_infos?: unknown }).balance_infos;
+  if (!Array.isArray(infos)) return [];
+  return infos.flatMap((raw, index) => {
+    if (!raw || typeof raw !== "object") return [];
+    const info = raw as { currency?: string; total_balance?: string | number };
+    const amount = Number(info.total_balance);
+    if (!Number.isFinite(amount)) return [];
+    const currency = info.currency || "CNY";
+    return [{
+      ...baseRow(`deepseek_balance_${currency.toLowerCase()}_${index}`, "deepseek", "balance", "DeepSeek"),
+      remainingText: `${currency} ${amount.toFixed(2)}`,
+      detail: "API account balance",
+      status: "available" as const,
+    }];
+  });
+}
+
+async function fetchDeepSeek(): Promise<RemainingRow[]> {
+  const fallback = [baseRow("deepseek_balance", "deepseek", "balance", "DeepSeek")];
+  const auth = await readJson(join(home, ".deepseek", "auth.json"));
+  const key = process.env.DEEPSEEK_API_KEY
+    || await readPiCredential(["deepseek"], ["key", "access"])
+    || (auth as { api_key?: string } | null)?.api_key;
+  if (!key) return fallback;
+  const res = await fetchWithTimeout("https://api.deepseek.com/user/balance", {
+    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+  });
+  if (!res.ok) {
+    console.log(`[usage-remaining] deepseek: ${res.status} from balance endpoint`);
+    return fallback;
+  }
+  const parsed = parseDeepSeekBalance(await res.json());
+  return parsed.length > 0 ? parsed : fallback;
+}
+
 // Claude Code rotates its OAuth token while agents run; the old token 401s for a
 // moment and the rows would flicker out. Serve the last good value instead.
 const lastGood = new Map<string, { row: RemainingRow; at: number }>();
@@ -597,13 +900,16 @@ function pillText(rows: RemainingRow[]): string {
 
 export async function fetchUsage(input: { force?: boolean } = {}): Promise<UsageSnapshot> {
   await loadCache();
-  const [claude, codex, grok, cursor] = await Promise.allSettled([
+  const [claude, codex, grok, cursor, kimi, glm, deepseek] = await Promise.allSettled([
     fetchClaude(),
     fetchCodex(),
     fetchGrok(),
     fetchCursor(),
+    fetchKimi(),
+    fetchGlm(),
+    fetchDeepSeek(),
   ]);
-  for (const [name, result] of [["claude", claude], ["codex", codex], ["grok", grok], ["cursor", cursor]] as const) {
+  for (const [name, result] of [["claude", claude], ["codex", codex], ["grok", grok], ["cursor", cursor], ["kimi", kimi], ["glm", glm], ["deepseek", deepseek]] as const) {
     if (result.status === "rejected") {
       const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
       console.log(`[usage-remaining] ${name}: fetch failed (${reason})`);
@@ -621,13 +927,25 @@ export async function fetchUsage(input: { force?: boolean } = {}): Promise<Usage
   ]));
   rows.push(grok.status === "fulfilled" ? grok.value : baseRow("grok_week", "grok", "weekly", "Grok"));
   rows.push(cursor.status === "fulfilled" ? cursor.value : baseRow("cursor_month", "cursor", "weekly", "Cursor"));
+  rows.push(...(kimi.status === "fulfilled" ? kimi.value : [
+    baseRow("kimi_session", "kimi", "session", "Kimi"),
+    baseRow("kimi_week", "kimi", "weekly", "Kimi"),
+  ]));
+  rows.push(...(glm.status === "fulfilled" ? glm.value : [
+    baseRow("glm_session", "glm", "session", "GLM"),
+    baseRow("glm_mcp", "glm", "weekly", "GLM MCP"),
+  ]));
+  rows.push(...(deepseek.status === "fulfilled" ? deepseek.value : [
+    baseRow("deepseek_balance", "deepseek", "balance", "DeepSeek"),
+  ]));
 
   const merged = withLastGood(rows);
   const session = merged.filter((r) => r.group === "session");
   const weekly = merged.filter((r) => r.group === "weekly");
+  const balance = merged.filter((r) => r.group === "balance");
   return {
     fetchedAt: new Date().toISOString(),
-    pillText: `5h ${pillText(session)} | wk ${pillText(weekly)}`,
-    rows: [...session, ...weekly],
+    pillText: `5h ${pillText(session)} | wk ${pillText(weekly)} | bal ${pillText(balance)}`,
+    rows: [...session, ...weekly, ...balance],
   };
 }

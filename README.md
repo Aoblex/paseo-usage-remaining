@@ -5,7 +5,8 @@ A [Paseo](https://paseo.sh) plugin that shows how much AI usage you have **left*
 The original two-line display is preserved on Paseo Desktop, web, and compatible native clients:
 
 - **5H** — provider logos, colored remaining percentages, and session reset times
-- **WK** — Claude, Fable, Codex, Grok, and Cursor (monthly) with their reset times
+- **WK** — Claude, Fable, Codex, Grok, Cursor (monthly), Kimi, and GLM with their reset times
+- **BAL** — Kimi extra-usage and DeepSeek API account balances when available
 
 Green, yellow, and red percentages show remaining capacity. Refresh inline, or click
 for the full dashboard. On narrow web screens the reset labels and refresh button
@@ -22,11 +23,14 @@ and show an error.
 | Provider | Source | Notes |
 | --- | --- | --- |
 | Claude (session + weekly + Fable weekly) | Claude Code login (macOS Keychain / `~/.claude/.credentials.json` / `CLAUDE_CODE_OAUTH_TOKEN`) | Fable's model-scoped weekly limit is shown as its own entry |
-| Codex | Codex CLI login (`~/.codex/auth.json`) | Windows classified by reported length; plans that report only a weekly window (e.g. Pro) show no Codex 5H entry |
+| Codex | Pi `openai-codex` OAuth or Codex CLI login (`~/.codex/auth.json`) | Pi auth is preferred; windows are classified by reported length, and plans that report only a weekly window show no Codex 5H entry |
 | Grok | Grok CLI login (`~/.grok/auth.json`) | Supports unified-billing (weekly %) and legacy monthly credits. The billing body is protobuf-JSON: zero-valued fields are omitted, so a live period with no usage fields means 0% used (100% remaining) |
 | Cursor | Cursor desktop / `cursor-agent` login | Individual plans only — team-billed seats don't expose plan usage |
+| Kimi | Pi `kimi-coding` auth or Kimi Code login (`~/.kimi-code/credentials/kimi-code.json`) | Shows short/weekly plan windows and extra-usage balance; Pi auth is preferred because it keeps OAuth fresh |
+| GLM | Pi `glm`/`zai` auth, `Z_AI_API_KEY`, or `~/.config/glm-acp-agent/credentials.json` | Shows Coding Plan token/credit windows and monthly MCP quota |
+| DeepSeek | Pi `deepseek` auth, `DEEPSEEK_API_KEY`, or `~/.deepseek/auth.json` | Shows API account cash balance, not web membership usage |
 
-Everything is read **locally and read-only**. No credentials are written, logged, or sent anywhere except each provider's own usage API.
+Credentials are read locally and are never logged. They are sent only to each provider's own OAuth, usage, or balance API. Kimi's 15-minute Pi OAuth token is refreshed under Pi's credential-file lock; only the `kimi-coding` entry in `~/.pi/agent/auth.json` is updated, preserving the other providers.
 
 ## Install
 
@@ -101,7 +105,7 @@ Future host changes require rechecking the adapter against the installed app.
 
 ## Credits
 
-Provider endpoint and credential-file handling is based on Paseo's own open-source quota-fetcher ([getpaseo/paseo](https://github.com/getpaseo/paseo), Apache-2.0). Provider logos are the trademarks of their respective owners, used for identification only.
+Provider endpoint and credential-file handling is based on Paseo's own open-source quota-fetcher ([getpaseo/paseo](https://github.com/getpaseo/paseo), Apache-2.0). Kimi, Z.ai, and DeepSeek icon paths come from [Simple Icons](https://simpleicons.org/) and are rendered locally as PNG data URIs. Provider logos are the trademarks of their respective owners, used for identification only.
 
 ## License
 
