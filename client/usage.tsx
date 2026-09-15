@@ -7,7 +7,7 @@ import { expandNativeComposer } from "./native-composer";
 import { expandWebComposer } from "./web-composer";
 import { registerUsagePills } from "./registry";
 import { providerLogos } from "./logos";
-import { compactWindowLabel, groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
+import { groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
 import { listUsage, type RemainingRow } from "../shared/usage";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -72,12 +72,9 @@ function CompactProviderChip({ provider, theme, narrow }: { provider: ProviderUs
       {uri ? <Image source={{ uri }} style={{ width: 14, height: 14, borderRadius: 3 }} /> : null}
       {narrow ? null : <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>{provider.label}</Text>}
       {provider.metrics.map((row, index) => {
-        const period = compactWindowLabel(row);
-        const reset = row.resetAt && row.resetAt !== period ? row.resetAt : null;
         return (
           <View key={row.id} style={{ flexDirection: "row", alignItems: "baseline", gap: 3 }}>
             {index > 0 ? <Text style={{ color: theme.colors.border, fontSize: 11, marginHorizontal: 1 }}>|</Text> : null}
-            {period ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "600" }}>{period}</Text> : null}
             <Text
               style={{
                 color: row.status === "available" ? toneColor(theme, row.tone) : theme.colors.foregroundMuted,
@@ -87,7 +84,7 @@ function CompactProviderChip({ provider, theme, narrow }: { provider: ProviderUs
             >
               {row.remainingText}
             </Text>
-            {reset ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>· {reset}</Text> : null}
+            {row.resetAt ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 10 }}>· {row.resetAt}</Text> : null}
           </View>
         );
       })}

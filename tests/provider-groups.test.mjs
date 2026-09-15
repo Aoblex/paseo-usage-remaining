@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compactWindowLabel, groupRowsByProvider, metricLabel } from '../client/provider-groups.ts';
+import { groupRowsByProvider, metricLabel } from '../client/provider-groups.ts';
 
 const row = (id, brand, group, status = 'available', detail = null) => ({
   id,
@@ -48,13 +48,6 @@ test('unconfigured providers remain as one explanatory card without empty metric
   assert.equal(provider.status, 'unavailable');
   assert.deepEqual(provider.metrics, []);
   assert.deepEqual(provider.details, ['No supported credentials found']);
-});
-
-test('compact window labels use short, scannable periods', () => {
-  assert.equal(compactWindowLabel({ ...row('kimi_5h', 'kimi', 'session'), metricLabel: '5-hour rolling usage' }), '5h');
-  assert.equal(compactWindowLabel({ ...row('kimi_month_total', 'kimi', 'weekly'), metricLabel: 'Membership monthly usage' }), '30d');
-  assert.equal(compactWindowLabel({ ...row('codex_0', 'codex', 'weekly'), metricLabel: '1-week limit' }), '7d');
-  assert.equal(compactWindowLabel(row('deepseek_balance_cny_0', 'deepseek', 'balance')), null);
 });
 
 test('DeepSeek currency rows share one API balance card', () => {
