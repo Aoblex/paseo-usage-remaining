@@ -9,10 +9,7 @@ for the full dashboard. On narrow web screens the refresh button moves out of th
 inline display; provider values retain their reset labels and wrap when needed.
 
 On iOS, the same horizontal flow stays above the input and wraps when needed. Tap it to open all providers in a scrollable sheet.
-Cards show each provider’s logo and name, colored remaining capacity, and one reset
-label. Narrow screens stack the header above a 44px refresh button. The full
-dashboard uses the same responsive cards. Failed refreshes preserve the last values
-and show an error.
+The dashboard and mobile sheet are provider-first: each provider gets one card with its logo, credential source, and provider-specific metrics such as Session, Weekly, Fable weekly, MCP, or API balance. Fable stays inside Claude and MCP stays inside GLM. Desktop uses a responsive two-column grid; narrow screens use one column. Failed refreshes preserve the last values and explain the error inside the affected provider card.
 
 ## What it reads
 

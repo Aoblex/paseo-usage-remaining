@@ -7,6 +7,7 @@ import { expandNativeComposer } from "./native-composer";
 import { expandWebComposer } from "./web-composer";
 import { registerUsagePills } from "./registry";
 import { providerLogos } from "./logos";
+import { groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
 import { listUsage, type RemainingRow, type UsageSnapshot } from "../shared/usage";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -210,8 +211,51 @@ function RemainingBar({ row, theme }: { row: RemainingRow; theme: Theme }) {
   );
 }
 
-function UsageCard({ row, theme, compact }: { row: RemainingRow; theme: Theme; compact: boolean }) {
-  const unavailable = row.status !== "available";
+function ProviderMark({ provider, theme }: { provider: ProviderUsage; theme: Theme }) {
+  const uri = providerLogos[provider.brand];
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+      {uri ? <Image source={{ uri }} style={{ width: 26, height: 26, borderRadius: 6 }} /> : null}
+      <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 17, fontWeight: "700", flexShrink: 1 }}>
+        {provider.label}
+      </Text>
+    </View>
+  );
+}
+
+function ProviderMetric({ row, theme, last }: { row: RemainingRow; theme: Theme; last: boolean }) {
+  return (
+    <View
+      style={{
+        paddingVertical: 10,
+        borderBottomWidth: last ? 0 : StyleSheet.hairlineWidth,
+        borderBottomColor: theme.colors.border,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+        <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600", flexShrink: 1 }}>
+          {metricLabel(row)}
+        </Text>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: 7 }}>
+          <Text style={{ color: row.status === "available" ? toneColor(theme, row.tone) : theme.colors.foregroundMuted, fontSize: 17, fontWeight: "700" }}>
+            {row.remainingText}
+          </Text>
+          {row.resetAt ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{row.resetAt}</Text> : null}
+        </View>
+      </View>
+      <RemainingBar row={row} theme={theme} />
+    </View>
+  );
+}
+
+function ProviderCard({ provider, theme, compact }: { provider: ProviderUsage; theme: Theme; compact: boolean }) {
+  const unavailable = provider.status !== "available";
+  const badge = provider.credentialSource
+    ? `${provider.credentialSource}${provider.status === "error" ? " · issue" : ""}`
+    : provider.status === "unavailable" ? "Not configured" : provider.status === "error" ? "Unavailable" : "Available";
+  const details = provider.details.length > 0
+    ? provider.details
+    : provider.status === "unavailable" ? ["No credentials or usage data found"] : [];
   return (
     <View
       style={{
@@ -219,23 +263,26 @@ function UsageCard({ row, theme, compact }: { row: RemainingRow; theme: Theme; c
         borderColor: theme.colors.border,
         borderWidth: 1,
         borderRadius: 14,
-        padding: compact ? 12 : 16,
-        opacity: unavailable ? 0.6 : 1,
+        paddingHorizontal: compact ? 12 : 16,
+        paddingVertical: compact ? 12 : 14,
+        opacity: unavailable ? 0.68 : 1,
+        flexBasis: compact ? "100%" : "48%",
+        flexGrow: 1,
+        minWidth: compact ? 0 : 280,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <BrandMark row={row} theme={theme} size={22} showLabel />
-        <Text style={{ color: toneColor(theme, row.tone), fontSize: 18, fontWeight: "700", flexShrink: 1 }}>{row.remainingText}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingBottom: provider.metrics.length ? 4 : 8 }}>
+        <ProviderMark provider={provider} theme={theme} />
+        <View style={{ backgroundColor: theme.colors.surface2, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 }}>
+          <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 10, fontWeight: "700" }}>{badge}</Text>
+        </View>
       </View>
-      <View>
-        {row.resetAt ? (
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginTop: 6 }}>Resets in {row.resetAt}</Text>
-        ) : null}
-      </View>
-      <RemainingBar row={row} theme={theme} />
-      {row.detail ? (
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginTop: 6 }}>{row.detail}</Text>
-      ) : null}
+      {provider.metrics.map((row, index) => (
+        <ProviderMetric key={row.id} row={row} theme={theme} last={index === provider.metrics.length - 1} />
+      ))}
+      {details.map((detail) => (
+        <Text key={detail} style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginTop: 6 }}>{detail}</Text>
+      ))}
     </View>
   );
 }
@@ -243,10 +290,7 @@ function UsageCard({ row, theme, compact }: { row: RemainingRow; theme: Theme; c
 function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "layout">) {
   const usage = useUsage();
   const now = useNow(15_000);
-  const rows = usage.data?.rows ?? [];
-  const session = rows.filter((r) => r.group === "session");
-  const weekly = rows.filter((r) => r.group === "weekly");
-  const balances = rows.filter((r) => r.group === "balance");
+  const providers = useMemo(() => groupRowsByProvider(usage.data?.rows ?? []), [usage.data?.rows]);
   const updated = formatAgo(usage.data?.fetchedAt, now);
   const styles = useMemo(
     () => ({
@@ -258,7 +302,6 @@ function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "lay
       },
       title: { color: theme.colors.foreground, fontSize: layout.compact ? 20 : 24, fontWeight: "700" as const },
       subtitle: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      section: { color: theme.colors.foregroundMuted, fontSize: 13, fontWeight: "700" as const, marginTop: 8 },
       error: { color: theme.colors.statusDanger },
     }),
     [theme, layout.compact],
@@ -280,18 +323,11 @@ function UsageContent({ theme, layout }: Pick<PluginSurfaceProps, "theme" | "lay
       </View>
       {usage.isError ? <Text style={styles.error}>{String(usage.error)}</Text> : null}
       {!usage.data && !usage.isError ? <Text style={styles.subtitle}>Loading…</Text> : null}
-      <Text style={styles.section}>5-hour session</Text>
-      {session.map((row) => (
-        <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
-      ))}
-      <Text style={styles.section}>Weekly / monthly</Text>
-      {weekly.map((row) => (
-        <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
-      ))}
-      <Text style={styles.section}>API / extra usage balance</Text>
-      {balances.map((row) => (
-        <UsageCard key={row.id} row={row} theme={theme} compact={layout.compact} />
-      ))}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "stretch", gap: layout.compact ? 10 : 12 }}>
+        {providers.map((provider) => (
+          <ProviderCard key={provider.id} provider={provider} theme={theme} compact={layout.compact} />
+        ))}
+      </View>
     </View>
   );
 }
