@@ -120,6 +120,9 @@ export function groupRowsByProvider(rows: RemainingRow[]): ProviderUsage[] {
     .sort((a, b) => {
       const aIndex = PROVIDER_ORDER.indexOf(a.brand);
       const bIndex = PROVIDER_ORDER.indexOf(b.brand);
-      return (aIndex < 0 ? PROVIDER_ORDER.length : aIndex) - (bIndex < 0 ? PROVIDER_ORDER.length : bIndex);
+      // Account slots share a brand, so order them by slot instead of by whichever
+      // window the provider happened to report first.
+      return (aIndex < 0 ? PROVIDER_ORDER.length : aIndex) - (bIndex < 0 ? PROVIDER_ORDER.length : bIndex)
+        || a.id.localeCompare(b.id);
     });
 }

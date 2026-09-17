@@ -66,13 +66,15 @@ test('extra Codex accounts stay separate cards under the Codex brand', () => {
     providerKey: account === 'Codex #1' ? 'codex-1' : 'codex-2',
   });
   const providers = groupRowsByProvider([
-    codexRow('codex_1_0', 'session', 'Codex #1'),
-    codexRow('codex_1_1', 'weekly', 'Codex #1'),
     codexRow('codex_2_0', 'session', 'Codex #2'),
+    codexRow('codex_1_1', 'weekly', 'Codex #1'),
+    codexRow('codex_2_1', 'weekly', 'Codex #2'),
+    codexRow('codex_1_0', 'session', 'Codex #1'),
     row('grok_week', 'grok', 'weekly'),
   ]);
   assert.deepEqual(providers.map((provider) => provider.id), ['codex-1', 'codex-2', 'grok']);
   assert.deepEqual(providers.map((provider) => provider.label), ['Codex #1', 'Codex #2', 'Grok']);
   assert.deepEqual(providers.map((provider) => provider.brand), ['codex', 'codex', 'grok']);
-  assert.deepEqual(providers[1].metrics.map((metric) => metric.id), ['codex_2_0']);
+  assert.deepEqual(providers[0].metrics.map((metric) => metric.id), ['codex_1_1', 'codex_1_0']);
+  assert.deepEqual(providers[1].metrics.map((metric) => metric.id), ['codex_2_0', 'codex_2_1']);
 });
