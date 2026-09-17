@@ -1,15 +1,55 @@
 import type { ComponentType } from "react";
 import type { PluginClientContext, PluginButtonRegistration, PluginButtonIcon, PluginButtonContentProps } from "@getpaseo/plugin/client";
 import type { UsageSnapshot } from "../shared/usage";
+import { groupRowsByProvider, visibleMetrics } from "./provider-groups.ts";
 
-type Agent = { id: string; workspaceId?: string | null; provider: string };
+type Agent = { id: string; workspaceId?: string | null; provider: string; model?: string | null };
 
-export function usageLabel(provider: string, snapshot?: UsageSnapshot): string {
-  const brand = provider.split("/")[0];
-  const rows = snapshot?.rows.filter((row) => row.brand === brand && row.status === "available") ?? [];
+const KNOWN_BRANDS = new Set(["claude", "fable", "codex", "grok", "cursor", "kimi", "glm", "deepseek"]);
+
+// Pi and OpenCode serve every configured model under one provider id, so their
+// models name the upstream provider instead: `openai-codex/gpt-5.6-sol`.
+const MODEL_BRANDS: Record<string, string> = {
+  anthropic: "claude",
+  "openai-codex": "codex",
+  openai: "codex",
+  "kimi-coding": "kimi",
+  "kimi-for-coding": "kimi",
+  moonshotai: "kimi",
+  "moonshotai-cn": "kimi",
+  "zai-coding-plan": "glm",
+  "zai-coding-cn": "glm",
+  zai: "glm",
+  zhipu: "glm",
+  xai: "grok",
+};
+
+// Null means "cannot tell", which falls back to summarizing every provider rather
+// than claiming the agent has no usage. That is what made every Pi agent's pill
+// read "Usage unavailable": Paseo keeps the model out of `provider`.
+function agentBrand(provider: string, model: string | null | undefined): string | null {
+  const fromProvider = provider.split("/")[0];
+  if (KNOWN_BRANDS.has(fromProvider)) return fromProvider;
+  const fromModel = model?.split("/")[0] ?? "";
+  if (!fromModel) return null;
+  const resolved = MODEL_BRANDS[fromModel] ?? fromModel;
+  return KNOWN_BRANDS.has(resolved) ? resolved : null;
+}
+
+export function usageLabel(provider: string, model: string | null | undefined, snapshot?: UsageSnapshot): string {
   if (!snapshot) return "Usage…";
-  if (!rows.length) return "Usage unavailable";
-  return `${rows[0].label} · ${rows.map((row) => `${row.remainingText}${row.resetAt ? ` ${row.resetAt}` : ""}`).join(" · ")}`;
+  const brand = agentBrand(provider, model);
+  // Same grouping as the strip, so this label can never disagree with what the
+  // composer shows. Repeating one label would otherwise make a bare "92%" ambiguous.
+  const cards = groupRowsByProvider(snapshot.rows)
+    .filter((card) => (brand === null || card.brand === brand) && card.metrics.length > 0)
+    .map((card) => ({
+      label: card.label,
+      values: visibleMetrics(card).map((row) => `${row.remainingText}${row.resetAt ? ` ${row.resetAt}` : ""}`).join(" · "),
+    }));
+  if (!cards.length) return "Usage unavailable";
+  if (cards.length === 1) return `${cards[0].label} · ${cards[0].values}`;
+  return cards.map((card) => `${card.label} ${card.values}`).join(" · ");
 }
 
 // Use the SDK shipped with Paseo 0.8.0, not the newer unreleased owned-list API.
@@ -30,7 +70,7 @@ export function registerUsagePills(client: PluginClientContext, fetchUsage: () =
     if (stopped) return;
     if (!agent.workspaceId) { remove(agent.id); return; }
     const existing = pills.get(agent.id);
-    const label = usageLabel(agent.provider, snapshot);
+    const label = usageLabel(agent.provider, agent.model, snapshot);
     if (existing?.agent.workspaceId === agent.workspaceId) {
       existing.agent = agent;
       existing.registration.update({ label });
@@ -79,7 +119,7 @@ export function registerUsagePills(client: PluginClientContext, fetchUsage: () =
       if (stopped) return;
       snapshot = next;
       for (const { agent, registration } of pills.values()) {
-        registration.update({ label: usageLabel(agent.provider, snapshot) });
+        registration.update({ label: usageLabel(agent.provider, agent.model, snapshot) });
       }
     } catch {
       if (!stopped) for (const { registration } of pills.values()) registration.update({ label: "Usage unavailable" });

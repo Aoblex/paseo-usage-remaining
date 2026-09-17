@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupRowsByProvider, metricLabel } from '../client/provider-groups.ts';
+import { groupRowsByProvider, metricLabel, visibleMetrics } from '../client/provider-groups.ts';
 
 const row = (id, brand, group, status = 'available', detail = null) => ({
   id,
@@ -57,6 +57,22 @@ test('DeepSeek currency rows share one API balance card', () => {
   ]);
   assert.equal(provider.label, 'DeepSeek');
   assert.deepEqual(provider.metrics.map(metricLabel), ['API balance', 'API balance']);
+});
+
+test('repeated window values collapse in the inline strip', () => {
+  const [codex] = groupRowsByProvider([
+    { ...row('codex_2_session', 'codex', 'session', 'error'), label: 'Codex #2', providerKey: 'codex-2' },
+    { ...row('codex_2_week', 'codex', 'weekly', 'error'), label: 'Codex #2', providerKey: 'codex-2' },
+  ]);
+  assert.deepEqual(codex.metrics.map((metric) => metric.id), ['codex_2_session', 'codex_2_week']);
+  assert.deepEqual(visibleMetrics(codex).map((metric) => metric.id), ['codex_2_session']);
+  // Two windows that differ in value or countdown both stay.
+  const [claude] = groupRowsByProvider([
+    { ...row('claude_session', 'claude', 'session'), remainingText: '80%', resetAt: '2h' },
+    { ...row('claude_week', 'claude', 'weekly'), remainingText: '80%', resetAt: '5d' },
+    { ...row('claude_extra', 'claude', 'balance'), remainingText: '80%', resetAt: '5d' },
+  ]);
+  assert.deepEqual(visibleMetrics(claude).map((metric) => metric.id), ['claude_session', 'claude_week']);
 });
 
 test('extra Codex accounts stay separate cards under the Codex brand', () => {

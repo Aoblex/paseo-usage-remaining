@@ -44,6 +44,19 @@ function providerId(row: RemainingRow): string {
   return row.brand === "fable" ? "claude" : row.brand;
 }
 
+// Two windows with the same value and countdown add nothing inline: an unreachable
+// provider would otherwise repeat one dimmed "—" per window. The dashboard keeps both
+// rows because it labels them.
+export function visibleMetrics(provider: ProviderUsage): RemainingRow[] {
+  const seen = new Set<string>();
+  return provider.metrics.filter((row) => {
+    const key = `${row.remainingText}\u0000${row.resetAt ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function metricLabel(row: RemainingRow): string {
   if (row.metricLabel) return row.metricLabel;
   if (METRIC_LABELS[row.id]) return METRIC_LABELS[row.id];

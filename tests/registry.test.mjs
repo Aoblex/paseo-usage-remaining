@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { registerUsagePills, usageLabel } from '../client/registry.ts';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-const agent = (id, workspaceId = 'w') => ({ id, workspaceId, provider: 'codex' });
+const agent = (id, workspaceId = 'w', extra = {}) => ({ id, workspaceId, provider: 'codex', ...extra });
 const snapshot = { rows: [{ brand: 'codex', label: 'Codex', group: 'weekly', remainingText: '92%', status: 'available' }] };
 function fixture(list) {
   let update;
@@ -22,10 +22,30 @@ function fixture(list) {
   return { client, created, state, update: value => update(value) };
 }
 test('current provider label uses value shape without quota group abbreviations', () => {
-  assert.equal(usageLabel('codex/gpt-6-astra', snapshot), 'Codex · 92%');
-  assert.equal(usageLabel('claude', snapshot), 'Usage unavailable');
-  assert.equal(usageLabel('codex'), 'Usage…');
-  assert.equal(usageLabel('cursor', { rows: [{ ...snapshot.rows[0], brand: 'cursor', label: 'Cursor', resetAt: '4d' }] }), 'Cursor · 92% 4d');
+  assert.equal(usageLabel('codex', 'gpt-6-astra', snapshot), 'Codex · 92%');
+  assert.equal(usageLabel('codex/gpt-6-astra', undefined, snapshot), 'Codex · 92%');
+  assert.equal(usageLabel('claude', 'fable-1', snapshot), 'Usage unavailable');
+  assert.equal(usageLabel('codex', 'gpt-6-astra'), 'Usage…');
+  assert.equal(usageLabel('cursor', 'auto', { rows: [{ ...snapshot.rows[0], brand: 'cursor', label: 'Cursor', resetAt: '4d' }] }), 'Cursor · 92% 4d');
+});
+
+test('wrapper providers resolve the brand from the model', () => {
+  const rows = [
+    { ...snapshot.rows[0], label: 'Codex #1', providerKey: 'codex-1' },
+    { ...snapshot.rows[0], id: 'codex_2_week', label: 'Codex #2', providerKey: 'codex-2', remainingText: '—', status: 'error' },
+    { ...snapshot.rows[0], id: 'deepseek_balance', brand: 'deepseek', label: 'DeepSeek', remainingText: 'CNY 28.70' },
+    { ...snapshot.rows[0], id: 'kimi_week', brand: 'kimi', label: 'Kimi', remainingText: '96%' },
+  ];
+  const wrapperSnapshot = { rows };
+  // Paseo reports every Pi agent as provider "pi", so the old provider-only lookup
+  // labelled all of them "Usage unavailable".
+  assert.equal(usageLabel('pi', 'deepseek/deepseek-flash', wrapperSnapshot), 'DeepSeek · CNY 28.70');
+  assert.equal(usageLabel('pi', 'openai-codex/gpt-5.6-sol', wrapperSnapshot), 'Codex #1 92% · Codex #2 —');
+  assert.equal(usageLabel('pi', 'kimi-coding/k3', wrapperSnapshot), 'Kimi · 96%');
+  assert.equal(usageLabel('opencode', 'zai-coding-plan/glm-5', wrapperSnapshot), 'Usage unavailable');
+  // An unknown model still shows the providers we do know about, in strip order.
+  assert.equal(usageLabel('pi', 'mystery/model', wrapperSnapshot), 'Codex #1 92% · Codex #2 — · Kimi 96% · DeepSeek CNY 28.70');
+  assert.equal(usageLabel('pi', null, wrapperSnapshot), 'Codex #1 92% · Codex #2 — · Kimi 96% · DeepSeek CNY 28.70');
 });
 test('all pages register; status updates preserve identity; moving/removing agents cleans up', async () => {
   const f = fixture(async ({ page }) => page.cursor ? { entries: [{ agent: agent('b') }], pageInfo: {} } : { entries: [{ agent: agent('a') }], pageInfo: { hasMore: true, nextCursor: 'next' } });

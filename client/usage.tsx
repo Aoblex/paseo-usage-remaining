@@ -7,7 +7,7 @@ import { expandNativeComposer } from "./native-composer";
 import { expandWebComposer } from "./web-composer";
 import { registerUsagePills } from "./registry";
 import { providerLogos } from "./logos";
-import { groupRowsByProvider, metricLabel, type ProviderUsage } from "./provider-groups";
+import { groupRowsByProvider, visibleMetrics, metricLabel, type ProviderUsage } from "./provider-groups";
 import { listUsage, type RemainingRow } from "../shared/usage";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -55,6 +55,7 @@ function formatAgo(iso: string | undefined, now: number): string | null {
 
 function CompactProviderChip({ provider, theme, narrow }: { provider: ProviderUsage; theme: Theme; narrow: boolean }) {
   const uri = providerLogos[provider.brand];
+  const metrics = visibleMetrics(provider);
   return (
     <View
       style={{
@@ -71,7 +72,7 @@ function CompactProviderChip({ provider, theme, narrow }: { provider: ProviderUs
     >
       {uri ? <Image source={{ uri }} style={{ width: 14, height: 14, borderRadius: 3 }} /> : null}
       {narrow ? null : <Text style={{ color: theme.colors.foreground, fontSize: 11, fontWeight: "600" }}>{provider.label}</Text>}
-      {provider.metrics.map((row, index) => {
+      {metrics.map((row, index) => {
         return (
           <View key={row.id} style={{ flexDirection: "row", alignItems: "baseline", gap: 3 }}>
             {index > 0 ? <Text style={{ color: theme.colors.border, fontSize: 11, marginHorizontal: 1 }}>|</Text> : null}

@@ -434,7 +434,9 @@ export async function fetchWithCredentials(
       }
     }
     if (rejectedResponse) {
-      rejected.push(active.sourceLabel);
+      // The status separates an expired token (401) from an HTML login wall, which is
+      // the difference between "sign in again" and "the endpoint moved".
+      rejected.push(`${active.sourceLabel} (${response.status})`);
       continue;
     }
     return { response, credential: active, detail: `credential: ${active.sourceLabel}` };
