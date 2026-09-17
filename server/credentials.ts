@@ -257,6 +257,27 @@ const SOURCE_IDS: Record<CredentialProvider, string[]> = {
   deepseek: ["deepseek"],
 };
 
+// Pi's multi-account Codex extension keeps one ChatGPT account per provider id:
+// `openai-codex` is slot 1, then `openai-codex-2`, `openai-codex-3`, …
+const CODEX_SLOT_PROVIDER_PATTERN = /^openai-codex-(\d+)$/;
+
+export function codexSlotNumber(providerId: string | undefined): number {
+  if (!providerId) return 1;
+  const match = CODEX_SLOT_PROVIDER_PATTERN.exec(providerId);
+  return match ? Number(match[1]) : 1;
+}
+
+// Slots only exist in Pi's auth file, so they are discovered per read instead of
+// being listed in SOURCE_IDS.
+function piSourceIds(provider: CredentialProvider, piAuth: unknown): string[] {
+  const base = SOURCE_IDS[provider];
+  if (provider !== "codex" || !piAuth || typeof piAuth !== "object" || Array.isArray(piAuth)) return base;
+  const slots = Object.keys(piAuth as Record<string, unknown>)
+    .filter((providerId) => CODEX_SLOT_PROVIDER_PATTERN.test(providerId))
+    .sort((left, right) => codexSlotNumber(left) - codexSlotNumber(right));
+  return [...base, ...slots];
+}
+
 function envCandidates(provider: CredentialProvider): CredentialCandidate[] {
   const values: Partial<Record<CredentialProvider, Array<string | undefined>>> = {
     codex: [process.env.CODEX_ACCESS_TOKEN],
@@ -327,7 +348,7 @@ export async function discoverCredentials(provider: CredentialProvider): Promise
   const piKimiAccess = provider === "kimi"
     ? ((piAuth as Record<string, unknown> | null)?.["kimi-coding"] as { access?: unknown } | undefined)?.access
     : undefined;
-  const pi = authEntryCandidates(piAuth, provider, "pi", SOURCE_IDS[provider]).map((found) =>
+  const pi = authEntryCandidates(piAuth, provider, "pi", piSourceIds(provider, piAuth)).map((found) =>
     provider === "kimi" && found.kind === "oauth" && found.secret === piKimiAccess
       ? { ...found, refresh: (force?: boolean) => refreshPiKimi(found.secret, force) }
       : found,

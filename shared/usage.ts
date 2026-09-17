@@ -6,6 +6,9 @@ export const RemainingToneSchema = z.enum(["default", "ok", "warning", "danger"]
 export const RemainingRowSchema = z.object({
   id: z.string(),
   brand: z.enum(["claude", "fable", "codex", "grok", "cursor", "kimi", "glm", "deepseek"]),
+  // Groups rows that share a provider but not a brand. Only extra Codex account
+  // slots use it today ("codex-2"), so the logo and colour stay Codex.
+  providerKey: z.string().nullable().optional(),
   group: z.enum(["session", "weekly", "balance"]),
   label: z.string(),
   metricLabel: z.string().nullable().optional(),

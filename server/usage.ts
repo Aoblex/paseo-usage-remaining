@@ -6,7 +6,7 @@ import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { RemainingRow, UsageSnapshot } from "../shared/usage";
-import { discoverCredentials, fetchWithCredentials, readJson } from "./credentials.ts";
+import { codexSlotNumber, discoverCredentials, fetchWithCredentials, readJson, type CredentialCandidate } from "./credentials.ts";
 
 const execFileAsync = promisify(execFile);
 const home = homedir();
@@ -334,11 +334,64 @@ export function parseCodexUsage(body: unknown): RemainingRow[] {
 }
 
 async function fetchCodex(): Promise<RemainingRow[]> {
-  const fallback = [
+  const slots = groupCodexCredentialsBySlot(await discoverCredentials("codex"));
+  // A signed-out Codex keeps one explanatory card instead of disappearing.
+  if (slots.size === 0) slots.set(1, []);
+  const multiple = slots.size > 1;
+  const results = await Promise.all(
+    [...slots.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(async ([slot, credentials]) => {
+        try {
+          return await fetchCodexSlot(slot, credentials, multiple);
+        } catch (error) {
+          console.log(`[usage-remaining] codex: slot ${slot} failed (${error instanceof Error ? error.message : String(error)})`);
+          return codexFallback(slot, multiple);
+        }
+      }),
+  );
+  return results.flat();
+}
+
+function codexFallback(slot: number, multiple: boolean): RemainingRow[] {
+  return codexSlotRows(slot, [
     baseRow("codex_session", "codex", "session", "Codex"),
     baseRow("codex_week", "codex", "weekly", "Codex"),
-  ];
-  const result = await fetchWithCredentials("codex", await discoverCredentials("codex"), (credential) => {
+  ], multiple);
+}
+
+export function groupCodexCredentialsBySlot(credentials: CredentialCandidate[]): Map<number, CredentialCandidate[]> {
+  const slots = new Map<number, CredentialCandidate[]>();
+  for (const credential of credentials) {
+    const slot = codexSlotNumber(credential.providerId);
+    const current = slots.get(slot);
+    if (current) current.push(credential);
+    else slots.set(slot, [credential]);
+  }
+  return slots;
+}
+
+// Extra Codex accounts are separate ChatGPT accounts with separate quotas, so each
+// slot gets its own card and chip. A lone slot 1 keeps the original plain "Codex"
+// ids and label so single-account installs render exactly as before.
+export function codexSlotRows(slot: number, rows: RemainingRow[], multiple: boolean): RemainingRow[] {
+  if (!multiple && slot === 1) return rows;
+  return rows.map((item) => ({
+    ...item,
+    id: item.id.replace(/^codex_/, `codex_${slot}_`),
+    label: `Codex #${slot}`,
+    providerKey: `codex-${slot}`,
+  }));
+}
+
+// A configured slot whose token the API rejects keeps a dimmed "—" row, so the
+// account stays visible with the reason instead of hiding like a signed-out slot.
+function codexUnreachable(rows: RemainingRow[]): RemainingRow[] {
+  return rows.map((item) => ({ ...item, detail: null, remainingText: "—", status: "error" as const }));
+}
+
+async function fetchCodexSlot(slot: number, credentials: CredentialCandidate[], multiple: boolean): Promise<RemainingRow[]> {
+  const result = await fetchWithCredentials("codex", credentials, (credential) => {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${credential.secret}`,
       Accept: "application/json",
@@ -347,6 +400,9 @@ async function fetchCodex(): Promise<RemainingRow[]> {
     if (credential.accountId) headers["ChatGPT-Account-Id"] = credential.accountId;
     return fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
   });
+  const fallback = credentials.length > 0
+    ? codexUnreachable(codexFallback(slot, multiple))
+    : codexFallback(slot, multiple);
   const res = result.response;
   if (!res) return credentialDetail(fallback, result.detail);
   if (!res.ok) return credentialDetail(fallback, `${result.detail} · Query failed (${res.status})`);
@@ -356,7 +412,7 @@ async function fetchCodex(): Promise<RemainingRow[]> {
   if (rows.length === 0) return credentialDetail(fallback, result.detail);
   // Some plans expose only a weekly window. Do not create a placeholder for a
   // limit the endpoint did not report.
-  return credentialDetail(rows, result.detail);
+  return credentialDetail(codexSlotRows(slot, rows, multiple), result.detail);
 }
 
 export type GrokBillingBody = {

@@ -39,6 +39,8 @@ const METRIC_LABELS: Record<string, string> = {
 };
 
 function providerId(row: RemainingRow): string {
+  // Extra Codex account slots share the Codex brand but keep their own card.
+  if (row.providerKey) return row.providerKey;
   return row.brand === "fable" ? "claude" : row.brand;
 }
 
@@ -105,7 +107,9 @@ export function groupRowsByProvider(rows: RemainingRow[]): ProviderUsage[] {
       const hasError = providerRows.some((row) => row.status === "error") || hasFailureDetail;
       return {
         id,
-        brand: id as RemainingRow["brand"],
+        // The brand drives the logo and colour, so it comes from the rows rather
+        // than the group id ("codex-2" is still Codex).
+        brand: providerRows[0]?.brand ?? "codex",
         label: PROVIDER_LABELS[id] ?? providerRows[0]?.label ?? id,
         status: hasError ? "error" : hasAvailable ? "available" : "unavailable",
         credentialSource,
@@ -114,8 +118,8 @@ export function groupRowsByProvider(rows: RemainingRow[]): ProviderUsage[] {
       };
     })
     .sort((a, b) => {
-      const aIndex = PROVIDER_ORDER.indexOf(a.id);
-      const bIndex = PROVIDER_ORDER.indexOf(b.id);
+      const aIndex = PROVIDER_ORDER.indexOf(a.brand);
+      const bIndex = PROVIDER_ORDER.indexOf(b.brand);
       return (aIndex < 0 ? PROVIDER_ORDER.length : aIndex) - (bIndex < 0 ? PROVIDER_ORDER.length : bIndex);
     });
 }

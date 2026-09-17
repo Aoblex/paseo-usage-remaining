@@ -58,3 +58,21 @@ test('DeepSeek currency rows share one API balance card', () => {
   assert.equal(provider.label, 'DeepSeek');
   assert.deepEqual(provider.metrics.map(metricLabel), ['API balance', 'API balance']);
 });
+
+test('extra Codex accounts stay separate cards under the Codex brand', () => {
+  const codexRow = (id, group, account) => ({
+    ...row(id, 'codex', group),
+    label: account,
+    providerKey: account === 'Codex #1' ? 'codex-1' : 'codex-2',
+  });
+  const providers = groupRowsByProvider([
+    codexRow('codex_1_0', 'session', 'Codex #1'),
+    codexRow('codex_1_1', 'weekly', 'Codex #1'),
+    codexRow('codex_2_0', 'session', 'Codex #2'),
+    row('grok_week', 'grok', 'weekly'),
+  ]);
+  assert.deepEqual(providers.map((provider) => provider.id), ['codex-1', 'codex-2', 'grok']);
+  assert.deepEqual(providers.map((provider) => provider.label), ['Codex #1', 'Codex #2', 'Grok']);
+  assert.deepEqual(providers.map((provider) => provider.brand), ['codex', 'codex', 'grok']);
+  assert.deepEqual(providers[1].metrics.map((metric) => metric.id), ['codex_2_0']);
+});
